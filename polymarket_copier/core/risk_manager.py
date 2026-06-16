@@ -339,6 +339,14 @@ class RiskManager:
         """Current $ allocated in a given market."""
         return self._market_exposure.get(market_id, 0.0)
 
+    def release_exposure(self, market_id: str, value: float) -> None:
+        """Release exposure registered by build_position() for a position that was
+        never actually opened (e.g. order placement failed). Unlike record_exit,
+        this does NOT touch bankroll or daily PnL — no trade occurred."""
+        self._market_exposure[market_id] = max(
+            0.0, self._market_exposure.get(market_id, 0.0) - value
+        )
+
     def market_exposure_cap(self) -> float:
         """Current cap in $ terms (changes as bankroll changes)."""
         return self.bankroll * self.cfg.max_market_exposure_pct

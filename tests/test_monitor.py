@@ -15,6 +15,11 @@ from polymarket_copier.core.monitor import (
 )
 
 
+async def _noop_trade(event):
+    """Async no-op trade callback (callbacks must be awaitable)."""
+    return None
+
+
 class TestParseTradeEvent:
     def test_parse_buy(self):
         raw = {
@@ -96,48 +101,63 @@ class TestTradeMonitor:
         assert len(new) == 1
         assert new[0]["id"] == "t1"
 
-    def test_handle_ws_message_emits_price_tick(self):
+    @pytest.mark.asyncio
+    async def test_handle_ws_message_emits_price_tick(self):
         ticks = []
+
+        async def on_price(t):
+            ticks.append(t)
+
         monitor = TradeMonitor(
             tracked_wallets=["0xabc"],
-            on_trade=lambda e: None,
-            on_price=lambda t: ticks.append(t),
+            on_trade=_noop_trade,
+            on_price=on_price,
         )
         monitor.subscribe_token("tok-a")
         import json
         raw = json.dumps([
             {"event_type": "price_change", "asset_id": "tok-a", "price": "0.55"}
         ])
-        monitor._handle_ws_message(raw)
+        await monitor._handle_ws_message(raw)
         assert len(ticks) == 1
         assert isinstance(ticks[0], PriceTick)
         assert ticks[0].price == 0.55
 
-    def test_handle_ws_message_ignores_unsubscribed(self):
+    @pytest.mark.asyncio
+    async def test_handle_ws_message_ignores_unsubscribed(self):
         ticks = []
+
+        async def on_price(t):
+            ticks.append(t)
+
         monitor = TradeMonitor(
             tracked_wallets=["0xabc"],
-            on_trade=lambda e: None,
-            on_price=lambda t: ticks.append(t),
+            on_trade=_noop_trade,
+            on_price=on_price,
         )
         import json
         raw = json.dumps([
             {"event_type": "price_change", "asset_id": "other-tok", "price": "0.55"}
         ])
-        monitor._handle_ws_message(raw)
+        await monitor._handle_ws_message(raw)
         assert len(ticks) == 0
 
-    def test_handle_ws_message_rejects_out_of_range_price(self):
+    @pytest.mark.asyncio
+    async def test_handle_ws_message_rejects_out_of_range_price(self):
         ticks = []
+
+        async def on_price(t):
+            ticks.append(t)
+
         monitor = TradeMonitor(
             tracked_wallets=["0xabc"],
-            on_trade=lambda e: None,
-            on_price=lambda t: ticks.append(t),
+            on_trade=_noop_trade,
+            on_price=on_price,
         )
         monitor.subscribe_token("tok-a")
         import json
         raw = json.dumps([
             {"event_type": "price_change", "asset_id": "tok-a", "price": "1.5"}
         ])
-        monitor._handle_ws_message(raw)
+        await monitor._handle_ws_message(raw)
         assert len(ticks) == 0

@@ -11,6 +11,36 @@ from polymarket_copier.api.gamma_client import GammaClient, _parse_market, _pars
 from polymarket_copier.models.types import Market
 
 
+class _FakeResp:
+    def __init__(self, data):
+        self._data = data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    async def json(self):
+        return self._data
+
+
+class _FakeSession:
+    """Minimal aiohttp.ClientSession stand-in for get_market_price's session.get."""
+
+    def __init__(self, data, exc=None):
+        self._data = data
+        self._exc = exc
+
+    def get(self, url, params=None):
+        if self._exc:
+            raise self._exc
+        return _FakeResp(self._data)
+
+
 @pytest.fixture
 def gamma_client():
     return GammaClient(base_url="https://gamma-api.polymarket.com")
@@ -44,14 +74,16 @@ class TestGammaClient:
 
     @pytest.mark.asyncio
     async def test_get_market_price_midpoint(self, gamma_client):
-        mock_data = {"midpoint": 0.72}
-        with patch.object(gamma_client, "_get", new_callable=AsyncMock, return_value=mock_data):
+        # get_market_price hits the CLOB /midpoint endpoint via session.get.
+        session = _FakeSession({"mid": "0.72"})
+        with patch.object(gamma_client, "_get_session", new_callable=AsyncMock, return_value=session):
             price = await gamma_client.get_market_price("token-1")
             assert price == pytest.approx(0.72)
 
     @pytest.mark.asyncio
     async def test_get_market_price_error(self, gamma_client):
-        with patch.object(gamma_client, "_get", new_callable=AsyncMock, side_effect=Exception("timeout")):
+        session = _FakeSession(None, exc=Exception("timeout"))
+        with patch.object(gamma_client, "_get_session", new_callable=AsyncMock, return_value=session):
             price = await gamma_client.get_market_price("token-1")
             assert price is None
 
