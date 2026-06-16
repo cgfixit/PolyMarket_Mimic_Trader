@@ -70,11 +70,13 @@ class ClobClient:
         return self._client.get_order_book(token_id)
 
     def _check_liquidity(self, book: dict, price: float, size_usdc: float) -> None:
-        """Ensure there is enough resting depth to fill without walking >1%."""
-        bids = book.get("bids", [])
+        """Ensure the ASK side has enough resting depth to fill a BUY without walking
+        the book more than 1% above the order price. A market BUY lifts asks, so the
+        ask side — not the bid side — is what determines fillability."""
+        asks = book.get("asks", [])
         available = 0.0
         max_price = price * 1.01
-        for level in bids:
+        for level in asks:
             level_price = float(level.get("price", 0))
             level_size = float(level.get("size", 0))
             if level_price <= max_price:
@@ -82,13 +84,16 @@ class ClobClient:
         if available < size_usdc:
             raise InsufficientLiquidityError(
                 f"Insufficient liquidity: need ${size_usdc:.2f}, "
-                f"available ${available:.2f} within 1% of ${price:.4f}"
+                f"available ${available:.2f} on the ask side within 1% of ${price:.4f}"
             )
 
     async def place_order(self, order: Order) -> dict[str, Any]:
         """Place an order on the CLOB. Returns order details or paper-mode simulation."""
-        book = await self.get_order_book(order.token_id)
-        if order.side == "BUY":
+        # The depth check only applies to live trading against a real order book.
+        # Paper mode has no real book, so it does not gate — otherwise a synthetic
+        # book would systematically skip valid markets across the [0,1] price range.
+        if not self.paper_mode and order.side == "BUY":
+            book = await self.get_order_book(order.token_id)
             self._check_liquidity(book, order.price, order.size_usdc)
 
         if self.paper_mode:

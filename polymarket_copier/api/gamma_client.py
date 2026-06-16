@@ -13,6 +13,8 @@ from polymarket_copier.models.types import Market
 logger = logging.getLogger("polymarket_copier")
 
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
+# Price-by-token-id is a CLOB concept, not a Gamma one — see get_market_price.
+CLOB_API_BASE = "https://clob.polymarket.com"
 
 
 class GammaClient:
@@ -58,11 +60,21 @@ class GammaClient:
         return None
 
     async def get_market_price(self, token_id: str) -> Optional[float]:
-        """Get the current mid price for a token."""
+        """Get the current mid price for an outcome token.
+
+        The Gamma /markets/{id} endpoint keys on condition/market id, so querying
+        it with an outcome *token* id always misses and returns None. The CLOB
+        midpoint endpoint (GET /midpoint?token_id=...) is the correct, no-auth
+        source for a token's current price.
+        """
+        session = await self._get_session()
+        url = f"{CLOB_API_BASE}/midpoint"
         try:
-            data = await self._get(f"/markets/{token_id}")
+            async with session.get(url, params={"token_id": token_id}) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
             if isinstance(data, dict):
-                price = data.get("midpoint") or data.get("lastTradePrice") or data.get("price")
+                price = data.get("mid") or data.get("midpoint") or data.get("price")
                 if price is not None:
                     return float(price)
         except Exception:

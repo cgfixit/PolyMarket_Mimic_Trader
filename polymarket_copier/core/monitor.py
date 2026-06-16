@@ -34,7 +34,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Set
+from typing import Awaitable, Callable, Dict, List, Optional, Set
 
 import aiohttp
 
@@ -95,9 +95,10 @@ class PriceTick:
     timestamp: float = field(default_factory=time.time)
 
 
-# Callback types
-TradeCallback = Callable[[TradeEvent], None]
-PriceCallback = Callable[[PriceTick], None]
+# Callback types — the copier's handlers are coroutine functions, so the
+# callbacks return an awaitable that MUST be awaited at the call site.
+TradeCallback = Callable[[TradeEvent], Awaitable[None]]
+PriceCallback = Callable[[PriceTick], Awaitable[None]]
 
 
 # ─── TradeMonitor ─────────────────────────────────────────────────────────────
@@ -255,7 +256,7 @@ class TradeMonitor:
                 await self._maybe_update_subscription(ws)
 
                 try:
-                    self._handle_ws_message(raw_msg)
+                    await self._handle_ws_message(raw_msg)
                 except Exception as exc:
                     logger.warning("WS message parse error: %s | raw=%r", exc, raw_msg[:200])
 
@@ -277,7 +278,7 @@ class TradeMonitor:
         """
         pass
 
-    def _handle_ws_message(self, raw: str) -> None:
+    async def _handle_ws_message(self, raw: str) -> None:
         """Parse a WebSocket message and emit PriceTick events for subscribed tokens."""
         events = json.loads(raw)
         if not isinstance(events, list):
@@ -302,7 +303,7 @@ class TradeMonitor:
 
                 tick = PriceTick(token_id=asset_id, price=price)
                 if self._on_price:
-                    self._on_price(tick)
+                    await self._on_price(tick)
 
     # ── REST Polling Loop ─────────────────────────────────────────────────────
 
@@ -371,7 +372,7 @@ class TradeMonitor:
         for raw_trade in new_trades:
             event = _parse_trade_event(wallet, raw_trade)
             if event is not None:
-                self._on_trade(event)
+                await self._on_trade(event)
 
     def _filter_new_trades(
         self,

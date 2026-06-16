@@ -99,7 +99,23 @@ class CopyTrader:
         if market and market.resolve_time:
             resolve_ts = market.resolve_time.timestamp()
 
-        # 7. build_position enforces the exposure cap.
+        # 7. Cheap gating checks FIRST — before registering exposure, so that a
+        #    rejection here can never leak phantom exposure into the RiskManager.
+        count = await self.portfolio.position_count()
+        if count >= self.config.copy_trading.max_concurrent_positions:
+            logger.info("Skip: max positions (%d) reached", count)
+            return
+
+        # 8. Per-trader drawdown stop.
+        trader_pnl = await self.portfolio.get_trader_pnl(event.wallet_address)
+        if trader_pnl <= -(self.risk.bankroll * self.config.risk_management.drawdown_stop_pct):
+            logger.info(
+                "Skip: trader %s drawdown stop (pnl=$%.2f)",
+                event.wallet_address[:10], trader_pnl,
+            )
+            return
+
+        # 9. build_position registers market exposure and enforces the exposure cap.
         try:
             pos = self.risk.build_position(
                 position_id=str(uuid.uuid4()),
@@ -114,21 +130,6 @@ class CopyTrader:
             logger.info("Skip: exposure cap — %s", e)
             return
 
-        # 8. Max concurrent positions.
-        count = await self.portfolio.position_count()
-        if count >= self.config.copy_trading.max_concurrent_positions:
-            logger.info("Skip: max positions (%d) reached", count)
-            return
-
-        # 9. Per-trader drawdown stop.
-        trader_pnl = await self.portfolio.get_trader_pnl(event.wallet_address)
-        if trader_pnl <= -(self.risk.bankroll * self.config.risk_management.drawdown_stop_pct):
-            logger.info(
-                "Skip: trader %s drawdown stop (pnl=$%.2f)",
-                event.wallet_address[:10], trader_pnl,
-            )
-            return
-
         order = Order(
             market_id=event.market_id,
             token_id=event.token_id,
@@ -137,14 +138,17 @@ class CopyTrader:
             size_usdc=copy_size_usdc,
         )
 
-        # 10–12. Place order (skip on insufficient liquidity, never propagate).
+        # 10. Place order. On ANY failure, release the exposure build_position
+        #     registered so a never-opened position cannot leak the exposure cap.
         try:
             await self.clob.place_order(order)
         except InsufficientLiquidityError as e:
             logger.info("Skip: insufficient liquidity — %s", e)
+            self.risk.release_exposure(pos.market_id, pos.entry_price * pos.size_shares)
             return
         except Exception as e:
             logger.error("Order placement failed: %s", e)
+            self.risk.release_exposure(pos.market_id, pos.entry_price * pos.size_shares)
             return
 
         await self.portfolio.open_position(pos)
@@ -164,10 +168,15 @@ class CopyTrader:
         if pos is None:
             return
 
+        # evaluate() raises pos.peak_price in-memory when the price makes a new high.
+        # Capture the prior peak BEFORE the call so we can detect and persist that
+        # new high — comparing tick.price against the just-mutated pos.peak_price
+        # would always be False and the DB peak would stay pinned at entry.
+        prev_peak = pos.peak_price
         reason = self.risk.evaluate(pos, tick.price)
 
-        if tick.price > pos.peak_price:
-            await self.portfolio.update_peak_price(pos.position_id, tick.price)
+        if pos.peak_price > prev_peak:
+            await self.portfolio.update_peak_price(pos.position_id, pos.peak_price)
 
         if reason != ExitReason.HOLD:
             await self._exit_position(pos, tick.price, reason)
