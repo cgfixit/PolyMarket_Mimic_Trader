@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -83,9 +84,15 @@ class CopyTrader:
                 logger.info("Skip: trade is %.1fs old > max %.1fs", age, max_age)
                 return
 
-        # 3. Resolution blackout. Fail CLOSED if market metadata is unavailable —
-        #    without it we cannot verify resolve time or volume.
-        market = await self.gamma.get_market(event.market_id)
+        # 3+4. Fetch market metadata and current price in parallel — both are
+        #      independent I/O operations so gathering them halves latency on the
+        #      critical detection→copy path.
+        market, current_price = await asyncio.gather(
+            self.gamma.get_market(event.market_id),
+            self.gamma.get_market_price(event.token_id),
+        )
+
+        # 3. Resolution blackout. Fail CLOSED if market metadata is unavailable.
         if market is None and self.config.risk_management.fail_closed_on_missing_data:
             logger.info("Skip: market data unavailable for %s (fail-closed)",
                         event.market_id[:10])
@@ -96,10 +103,7 @@ class CopyTrader:
                 logger.info("Skip: market resolves in %.1fh (blackout)", hours_to_resolve)
                 return
 
-        # 4. Price deviation check. Fail CLOSED if the current price is unknown —
-        #    falling back to the (stale) event price makes the deviation check
-        #    trivially pass and trades on data we couldn't verify.
-        current_price = await self.gamma.get_market_price(event.token_id)
+        # 4. Price deviation check. Fail CLOSED if the current price is unknown.
         if current_price is None:
             if self.config.risk_management.fail_closed_on_missing_data:
                 logger.info("Skip: current price unavailable for token %s (fail-closed)",
