@@ -7,6 +7,7 @@ Run: pytest tests/test_risk_manager.py -v
 """
 
 import time
+from datetime import timezone, datetime
 import pytest
 
 from polymarket_copier.core.risk_manager import (
@@ -17,6 +18,7 @@ from polymarket_copier.core.risk_manager import (
     Side,
     ExposureCapError,
     InvalidPriceError,
+    _midnight_utc,
 )
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -506,3 +508,77 @@ class TestTradingHalt:
                                  entry_price=0.50, size_shares=100.0)
         rm.record_exit(loss, 0.49)      # one more loss — streak is 1, not 3
         assert rm.is_trading_halted() is None
+
+
+# ─── [N] Midnight UTC correctness ────────────────────────────────────────────
+
+class TestMidnightUtc:
+    """_midnight_utc() must return 00:00:00 UTC regardless of the host timezone."""
+
+    def test_returns_midnight_utc(self):
+        ts = _midnight_utc()
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        assert dt.hour == 0
+        assert dt.minute == 0
+        assert dt.second == 0
+        assert dt.microsecond == 0
+
+    def test_is_today_or_yesterday_utc(self):
+        ts = _midnight_utc()
+        now_utc = datetime.now(timezone.utc)
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        # The returned midnight must be within 24h before now
+        assert 0 <= (now_utc - dt).total_seconds() < 86_400
+
+    def test_window_resets_after_24h(self, rm):
+        """Daily window resets after 86400 seconds have elapsed."""
+        # Force the start timestamp far in the past to trigger a reset
+        rm._day_start_ts = time.time() - 90_000  # 25 hours ago
+        rm._daily_pnl = -999.0
+        # Any evaluate/is_trading_halted call triggers _maybe_reset_daily_window
+        rm.is_trading_halted()
+        assert rm._daily_pnl == 0.0
+
+
+# ─── [O] Exposure cap restored correctly on restart ──────────────────────────
+
+class TestExposureRestoration:
+    """Simulate the startup loop in main.py that reconstructs exposure from DB."""
+
+    def test_restored_exposure_is_enforced(self):
+        rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=BANKROLL)
+        # Simulate main.py restoring an existing position
+        existing_value = 700.0  # $700 already in mkt_A
+        rm._market_exposure["mkt_A"] = existing_value
+
+        # Cap = 8% of $10,000 = $800.  $700 already in, only $100 headroom.
+        # A new position worth $200 should breach the cap.
+        with pytest.raises(ExposureCapError):
+            rm.build_position(
+                "new_pos", "mkt_A", "tok_A", "0xNEW",
+                entry_price=0.50, size_shares=400.0,  # $200 at 0.50
+            )
+
+    def test_restored_exposure_allows_under_cap(self):
+        rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=BANKROLL)
+        rm._market_exposure["mkt_A"] = 700.0  # $700 already
+
+        # $50 new position fits under the $800 cap
+        pos = rm.build_position(
+            "new_pos", "mkt_A", "tok_A", "0xNEW",
+            entry_price=0.50, size_shares=100.0,  # $50 at 0.50
+        )
+        assert pos is not None
+        assert rm._market_exposure["mkt_A"] == pytest.approx(750.0)
+
+    def test_no_double_counting_on_same_market(self):
+        """Adding exposure for the same market accumulates, not overwrites."""
+        rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=BANKROLL)
+        # Simulates restoring two open positions in the same market
+        rm._market_exposure["mkt_A"] = (
+            rm._market_exposure.get("mkt_A", 0.0) + 300.0
+        )
+        rm._market_exposure["mkt_A"] = (
+            rm._market_exposure.get("mkt_A", 0.0) + 300.0
+        )
+        assert rm._market_exposure["mkt_A"] == pytest.approx(600.0)

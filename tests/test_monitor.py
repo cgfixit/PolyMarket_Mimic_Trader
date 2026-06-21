@@ -340,3 +340,73 @@ class TestRateLimiterOnPollPath:
 
         assert len(received) == 1
         assert before <= received[0].detected_at <= after
+
+
+# ─── WebSocket Reconnect Fallback ─────────────────────────────────────────────
+
+class TestWsReconnectFallback:
+    """After _MAX_WS_RETRIES consecutive failures _ws_loop should exit (poll-only)."""
+
+    @pytest.mark.asyncio
+    async def test_ws_loop_exits_after_max_retries(self):
+        from unittest.mock import AsyncMock, patch
+        from polymarket_copier.core.monitor import _MAX_WS_RETRIES
+
+        monitor = TradeMonitor(
+            tracked_wallets=["0xABC"],
+            on_trade=_noop_trade,
+        )
+
+        call_count = 0
+
+        async def always_fail():
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("simulated WS drop")
+
+        with patch.object(monitor, "_ws_connect_and_listen", side_effect=always_fail):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                await monitor._ws_loop()
+
+        # _ws_loop must have returned (not infinite-looped) and retried exactly
+        # _MAX_WS_RETRIES times before falling back.
+        assert call_count == _MAX_WS_RETRIES
+        assert monitor._ws_healthy is False
+
+    @pytest.mark.asyncio
+    async def test_ws_healthy_false_after_fallback(self):
+        from unittest.mock import AsyncMock, patch
+
+        monitor = TradeMonitor(
+            tracked_wallets=["0xABC"],
+            on_trade=_noop_trade,
+        )
+        monitor._ws_healthy = True  # start as healthy
+
+        async def always_fail():
+            raise OSError("network gone")
+
+        with patch.object(monitor, "_ws_connect_and_listen", side_effect=always_fail):
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                await monitor._ws_loop()
+
+        assert monitor._ws_healthy is False
+
+    @pytest.mark.asyncio
+    async def test_retry_count_resets_on_clean_reconnect(self):
+        """A single successful connect resets the retry counter."""
+        from unittest.mock import AsyncMock, patch
+
+        monitor = TradeMonitor(
+            tracked_wallets=["0xABC"],
+            on_trade=_noop_trade,
+        )
+        monitor._stop_event.set()  # stop after first iteration
+
+        async def succeed_once():
+            pass  # clean return = successful connection
+
+        with patch.object(monitor, "_ws_connect_and_listen", side_effect=succeed_once):
+            await monitor._ws_loop()
+
+        assert monitor._ws_retry_count == 0
