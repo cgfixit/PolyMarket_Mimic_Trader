@@ -228,22 +228,25 @@ class CopyTrader:
 
     async def handle_price_tick(self, tick: PriceTick) -> None:
         """Called by the monitor's on_price callback for each real-time price update."""
-        pos = await self.portfolio.get_position_by_token(tick.token_id)
-        if pos is None:
-            return
+        # Two tracked traders can each be copied into a SEPARATE position on the
+        # same token. Evaluate ALL of them on this tick — fetching only one would
+        # orphan the rest, silently missing their TP/SL/trailing/time exits until
+        # a poll-based check happens to catch them.
+        positions = await self.portfolio.get_positions_by_token(tick.token_id)
+        for pos in positions:
+            # evaluate() raises pos.peak_price in-memory when the price makes a new
+            # high. Capture the prior peak BEFORE the call so we can detect and
+            # persist that new high — comparing tick.price against the just-mutated
+            # pos.peak_price would always be False and the DB peak would stay pinned
+            # at entry.
+            prev_peak = pos.peak_price
+            reason = self.risk.evaluate(pos, tick.price)
 
-        # evaluate() raises pos.peak_price in-memory when the price makes a new high.
-        # Capture the prior peak BEFORE the call so we can detect and persist that
-        # new high — comparing tick.price against the just-mutated pos.peak_price
-        # would always be False and the DB peak would stay pinned at entry.
-        prev_peak = pos.peak_price
-        reason = self.risk.evaluate(pos, tick.price)
+            if pos.peak_price > prev_peak:
+                await self.portfolio.update_peak_price(pos.position_id, pos.peak_price)
 
-        if pos.peak_price > prev_peak:
-            await self.portfolio.update_peak_price(pos.position_id, pos.peak_price)
-
-        if reason != ExitReason.HOLD:
-            await self._exit_position(pos, tick.price, reason)
+            if reason != ExitReason.HOLD:
+                await self._exit_position(pos, tick.price, reason)
 
     async def _exit_position(self, pos, price: float, reason: ExitReason) -> None:
         exit_order = Order(
@@ -274,23 +277,31 @@ class CopyTrader:
     async def _handle_source_exit(self, event: TradeEvent) -> None:
         """Exit our copy position when the tracked trader exits theirs.
 
-        Only acts when we hold a position for the same token AND it was copied
-        from the same trader — a coincidental sale by a different wallet is
-        irrelevant to our thesis for the position.
+        Only acts on position(s) for the same token that were copied FROM the
+        same trader — a coincidental sale by a different wallet is irrelevant to
+        our thesis for the position. Multiple traders can hold the same token,
+        so close only the matching wallet's copies and leave the others open.
         """
-        pos = await self.portfolio.get_position_by_token(event.token_id)
-        if pos is None or pos.trader_address != event.wallet_address:
+        positions = [
+            p
+            for p in await self.portfolio.get_positions_by_token(event.token_id)
+            if p.trader_address == event.wallet_address
+        ]
+        if not positions:
             return
 
-        logger.info(
-            "Source exit signal: trader %s sold %s — closing copy position %s",
-            event.wallet_address[:10], event.token_id[:10], pos.position_id,
-        )
-        # Use the freshest available price; fall back to the event price.
+        # Use the freshest available price; fall back to the event price. Fetch
+        # once and reuse across every matching position on this token.
         exit_price = await self.gamma.get_market_price(event.token_id)
         if exit_price is None:
             exit_price = event.price
-        await self._exit_position(pos, exit_price, ExitReason.SOURCE_EXIT)
+
+        for pos in positions:
+            logger.info(
+                "Source exit signal: trader %s sold %s — closing copy position %s",
+                event.wallet_address[:10], event.token_id[:10], pos.position_id,
+            )
+            await self._exit_position(pos, exit_price, ExitReason.SOURCE_EXIT)
 
     async def check_all_exits(self) -> None:
         """Poll-based exit check fallback (when WS price feed is unavailable)."""

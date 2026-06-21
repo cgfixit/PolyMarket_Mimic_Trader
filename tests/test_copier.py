@@ -176,6 +176,23 @@ class TestHandlePriceTick:
         await copier.handle_price_tick(PriceTick(token_id="ghost", price=0.55))
         assert await copier.portfolio.position_count() == 0
 
+    @pytest.mark.asyncio
+    async def test_multiple_positions_same_token_both_exit(self, copier):
+        from polymarket_copier.core.monitor import PriceTick
+        # Two tracked traders both buy the SAME token → two separate positions.
+        await copier.handle_trade_event(
+            buy_event(price=0.50, token="tok-a", wallet="0xwhale")
+        )
+        await copier.handle_trade_event(
+            buy_event(price=0.50, token="tok-a", wallet="0xother")
+        )
+        assert await copier.portfolio.position_count() == 2
+
+        # A single tick that crosses both stops (SL=0.375 for entry 0.50) must
+        # close BOTH positions — the second must not be orphaned.
+        await copier.handle_price_tick(PriceTick(token_id="tok-a", price=0.20))
+        assert await copier.portfolio.position_count() == 0
+
 
 class TestStalenessGate:
     @pytest.mark.asyncio
@@ -277,6 +294,20 @@ class TestSourceExitMirroring:
 
         await copier.handle_trade_event(sell_event(token="tok-a", wallet="0xother"))
         assert await copier.portfolio.position_count() == 1
+
+    @pytest.mark.asyncio
+    async def test_source_exit_closes_only_selling_traders_copy(self, copier):
+        """With two traders holding the same token, a SELL from trader A closes
+        only A's copy and leaves trader B's position on that token open."""
+        copier.config.copy_trading.mirror_source_exits = True
+        await copier.handle_trade_event(buy_event(token="tok-a", wallet="0xwhale"))
+        await copier.handle_trade_event(buy_event(token="tok-a", wallet="0xother"))
+        assert await copier.portfolio.position_count() == 2
+
+        await copier.handle_trade_event(sell_event(token="tok-a", wallet="0xwhale"))
+        remaining = await copier.portfolio.get_open_positions()
+        assert len(remaining) == 1
+        assert remaining[0].trader_address == "0xother"
 
     @pytest.mark.asyncio
     async def test_source_sell_with_no_open_position_is_noop(self, copier):
