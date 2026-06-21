@@ -61,6 +61,29 @@ class TestPortfolioManager:
         assert fetched.position_id == pos.position_id
 
     @pytest.mark.asyncio
+    async def test_get_positions_by_token_returns_all(self, portfolio, rm):
+        # Two traders copied into separate positions on the SAME token. Both
+        # must be returned so per-tick exit evaluation never orphans the second.
+        shared = "tok-shared"
+        pos_a = rm.build_position(
+            position_id="pos-a", market_id="mkt-a", token_id=shared,
+            trader_address="0xA", entry_price=0.50, size_shares=100.0,
+        )
+        pos_b = rm.build_position(
+            position_id="pos-b", market_id="mkt-a", token_id=shared,
+            trader_address="0xB", entry_price=0.50, size_shares=100.0,
+        )
+        await portfolio.open_position(pos_a)
+        await portfolio.open_position(pos_b)
+
+        fetched = await portfolio.get_positions_by_token(shared)
+        assert {p.position_id for p in fetched} == {"pos-a", "pos-b"}
+
+    @pytest.mark.asyncio
+    async def test_get_positions_by_token_empty_when_none(self, portfolio, rm):
+        assert await portfolio.get_positions_by_token("ghost-token") == []
+
+    @pytest.mark.asyncio
     async def test_close_position_profit(self, portfolio, rm):
         pos = make_position(rm, entry=0.50, size=1000.0)
         await portfolio.open_position(pos)

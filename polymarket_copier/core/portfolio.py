@@ -126,6 +126,22 @@ class PortfolioManager:
             return None
         return _row_to_position(row)
 
+    async def get_positions_by_token(self, token_id: str) -> List[Position]:
+        """Return ALL open positions on a token.
+
+        Two different tracked traders can each be copied into a SEPARATE
+        position (unique position_id) on the same token. The singular
+        get_position_by_token() returns only one of them, so per-tick exit
+        evaluation and source-exit mirroring must use this plural query to
+        avoid orphaning the second (and beyond) position on a shared token.
+        """
+        db = self._require_db()
+        cursor = await db.execute(
+            "SELECT * FROM positions WHERE token_id=? AND status='open'", (token_id,)
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_position(row) for row in rows]
+
     async def position_count(self) -> int:
         db = self._require_db()
         cursor = await db.execute(
