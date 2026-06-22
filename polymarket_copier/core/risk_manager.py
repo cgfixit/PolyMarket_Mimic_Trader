@@ -278,9 +278,8 @@ class RiskManager:
                 )
                 return ExitReason.MARKET_RESOLVING
 
-        # 2 ── Update trailing peak ────────────────────────────────────────────
-        if current_price > pos.peak_price:
-            pos.peak_price = current_price
+        # 2 ── Compute effective peak (do NOT mutate pos — caller persists to DB) ──
+        effective_peak = max(pos.peak_price, current_price)
 
         # 3 ── Take profit ──────────────────────────────────────────────────────
         if current_price >= pos.tp_price:
@@ -301,12 +300,12 @@ class RiskManager:
             return ExitReason.STOP_LOSS
 
         # 5 ── Trailing stop (only after price made a new high above entry) ────
-        if pos.peak_price > pos.entry_price:
-            trail_sl = self._compute_trail_sl(pos)
+        if effective_peak > pos.entry_price:
+            trail_sl = self._compute_trail_sl(pos, peak_override=effective_peak)
             if current_price <= trail_sl:
                 logger.info(
                     "TRAILING STOP | id=%s price=%.4f peak=%.4f trail_sl=%.4f",
-                    pos.position_id, current_price, pos.peak_price, trail_sl,
+                    pos.position_id, current_price, effective_peak, trail_sl,
                 )
                 return ExitReason.TRAILING_STOP
 
@@ -444,25 +443,44 @@ class RiskManager:
 
         TP = entry + max(dist_to_ceil × tp_fraction,  min_tp_abs), then clamped ≤ 1.0
         SL = entry − max(dist_to_floor × sl_fraction, min_sl_abs), then clamped ≥ 0.0
+
+        Near-boundary entries get adaptive minimums so TP/SL remain meaningful:
+          entry < 0.02 → min_sl at least 50% of entry (prevents SL clamping to 0)
+          entry > 0.98 → min_tp at least 50% of remaining upside
         """
         dist_ceil  = 1.0 - entry   # remaining upside
         dist_floor = entry         # remaining downside
 
-        tp_raw = entry + max(dist_ceil  * self.cfg.tp_range_fraction, self.cfg.min_tp_abs)
-        sl_raw = entry - max(dist_floor * self.cfg.sl_range_fraction, self.cfg.min_sl_abs)
+        # Adaptive minimums guard against degenerate TP/SL near price extremes.
+        min_tp = self.cfg.min_tp_abs
+        min_sl = self.cfg.min_sl_abs
+        if entry < 0.02:
+            min_sl = max(min_sl, entry * 0.5)
+        if entry > 0.98:
+            min_tp = max(min_tp, dist_ceil * 0.5)
+
+        tp_raw = entry + max(dist_ceil  * self.cfg.tp_range_fraction, min_tp)
+        sl_raw = entry - max(dist_floor * self.cfg.sl_range_fraction, min_sl)
 
         tp = min(tp_raw, 1.0)
         sl = max(sl_raw, 0.0)
 
+        if tp <= sl:
+            raise InvalidPriceError(
+                f"Entry {entry:.4f} produces TP={tp:.4f} ≤ SL={sl:.4f}. "
+                "Widen min_tp_abs / min_sl_abs in config or reject this entry."
+            )
+
         return round(tp, 6), round(sl, 6)
 
-    def _compute_trail_sl(self, pos: Position) -> float:
+    def _compute_trail_sl(self, pos: Position, peak_override: Optional[float] = None) -> float:
         """
         Trailing SL = peak − (peak − hard_SL) × trailing_fraction.
         Never drops below the hard SL.
         """
-        gap      = pos.peak_price - pos.sl_price
-        trail_sl = pos.peak_price - (gap * self.cfg.trailing_stop_fraction)
+        peak     = peak_override if peak_override is not None else pos.peak_price
+        gap      = peak - pos.sl_price
+        trail_sl = peak - (gap * self.cfg.trailing_stop_fraction)
         return max(trail_sl, pos.sl_price)
 
     def _assert_exposure_cap(self, market_id: str, new_value: float) -> None:
@@ -486,7 +504,9 @@ class RiskManager:
             )
 
     def _maybe_reset_daily_window(self) -> None:
-        if time.time() >= self._day_start_ts + 86_400:
+        now_utc   = datetime.fromtimestamp(time.time(), tz=timezone.utc)
+        start_utc = datetime.fromtimestamp(self._day_start_ts, tz=timezone.utc)
+        if now_utc.date() != start_utc.date():
             logger.info("Daily PnL window reset. Previous daily_pnl=%.2f", self._daily_pnl)
             self._daily_pnl    = 0.0
             self._day_start_ts = _midnight_utc()
