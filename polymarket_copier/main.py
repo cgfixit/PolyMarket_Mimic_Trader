@@ -51,14 +51,14 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
     portfolio = PortfolioManager(db_path="data/positions.db")
     await portfolio.init()
 
-    # Restore open positions to risk_manager exposure tracking on restart
+    # Restore open positions to risk_manager exposure tracking on restart.
+    # rehydrate_exposure() registers the exposure and warns (rather than
+    # silently carrying) if a since-lowered cap is now breached.
     for pos in await portfolio.get_open_positions():
-        value = pos.entry_price * pos.size_shares
-        risk_manager._market_exposure[pos.market_id] = (
-            risk_manager._market_exposure.get(pos.market_id, 0.0) + value
-        )
-        risk_manager._trader_exposure[pos.trader_address] = (
-            risk_manager._trader_exposure.get(pos.trader_address, 0.0) + value
+        risk_manager.rehydrate_exposure(
+            market_id=pos.market_id,
+            trader_address=pos.trader_address,
+            value=pos.entry_price * pos.size_shares,
         )
 
     gamma_client = GammaClient()

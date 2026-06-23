@@ -421,6 +421,44 @@ class RiskManager:
                 0.0, self._trader_exposure.get(trader_address, 0.0) - value
             )
 
+    def rehydrate_exposure(
+        self, market_id: str, trader_address: str, value: float
+    ) -> None:
+        """Restore exposure for an ALREADY-OPEN position on restart (e.g. when
+        replaying open positions from the portfolio DB).
+
+        Unlike build_position(), this deliberately does NOT enforce the caps:
+        the position already exists on-chain/in the book and must be tracked
+        even if a since-lowered cap is now exceeded. But it WARNS when the
+        restored exposure breaches the current cap, so an over-exposed restart
+        is surfaced to the operator instead of being silently carried (the old
+        main.py wrote straight into the private exposure dicts with no check)."""
+        self._market_exposure[market_id] = (
+            self._market_exposure.get(market_id, 0.0) + value
+        )
+        self._trader_exposure[trader_address] = (
+            self._trader_exposure.get(trader_address, 0.0) + value
+        )
+
+        market_cap = self.market_exposure_cap()
+        if self._market_exposure[market_id] > market_cap + _EPSILON:
+            logger.warning(
+                "Rehydrated exposure for market %s = $%.2f exceeds current cap "
+                "$%.2f (%.0f%% of $%.2f). No new copies will open here until it "
+                "drops below the cap.",
+                market_id, self._market_exposure[market_id], market_cap,
+                self.cfg.max_market_exposure_pct * 100, self.bankroll,
+            )
+
+        trader_cap = self.trader_allocation_cap()
+        if self._trader_exposure[trader_address] > trader_cap + _EPSILON:
+            logger.warning(
+                "Rehydrated allocation for trader %s = $%.2f exceeds current cap "
+                "$%.2f (%.0f%% of $%.2f).",
+                trader_address[:10], self._trader_exposure[trader_address],
+                trader_cap, self.cfg.max_trader_allocation * 100, self.bankroll,
+            )
+
     def market_exposure_cap(self) -> float:
         """Current cap in $ terms (changes as bankroll changes)."""
         return self.bankroll * self.cfg.max_market_exposure_pct

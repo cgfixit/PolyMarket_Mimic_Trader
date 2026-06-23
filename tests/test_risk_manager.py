@@ -582,3 +582,41 @@ class TestExposureRestoration:
             rm._market_exposure.get("mkt_A", 0.0) + 300.0
         )
         assert rm._market_exposure["mkt_A"] == pytest.approx(600.0)
+
+
+class TestRehydrateExposure:
+    """Restoring exposure for already-open positions on restart."""
+
+    def test_registers_market_and_trader_exposure(self):
+        rm = RiskManager(config=RiskConfig(), bankroll=10_000.0)
+        rm.rehydrate_exposure(market_id="mkt-a", trader_address="0xA", value=250.0)
+        assert rm.market_exposure("mkt-a") == pytest.approx(250.0)
+        assert rm.trader_exposure("0xA") == pytest.approx(250.0)
+
+    def test_accumulates_across_positions(self):
+        rm = RiskManager(config=RiskConfig(), bankroll=10_000.0)
+        rm.rehydrate_exposure("mkt-a", "0xA", 100.0)
+        rm.rehydrate_exposure("mkt-a", "0xA", 50.0)
+        assert rm.market_exposure("mkt-a") == pytest.approx(150.0)
+        assert rm.trader_exposure("0xA") == pytest.approx(150.0)
+
+    def test_over_cap_is_tracked_not_rejected(self, caplog):
+        # max_market_exposure_pct default 0.08 -> $800 cap on $10k bankroll.
+        rm = RiskManager(config=RiskConfig(), bankroll=10_000.0)
+        with caplog.at_level("WARNING"):
+            # Restoring a $1,000 position must NOT raise (the position exists),
+            # but must warn that it breaches the current cap.
+            rm.rehydrate_exposure("mkt-a", "0xA", 1_000.0)
+        assert rm.market_exposure("mkt-a") == pytest.approx(1_000.0)
+        assert any("exceeds current cap" in r.message for r in caplog.records)
+
+    def test_rehydrated_exposure_feeds_cap_enforcement(self):
+        # After restoring near-cap exposure, a new copy that would breach the
+        # market cap must be rejected by build_position().
+        rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=10_000.0)
+        rm.rehydrate_exposure("mkt-a", "0xA", 790.0)  # cap is $800
+        with pytest.raises(ExposureCapError):
+            rm.build_position(
+                position_id="p1", market_id="mkt-a", token_id="tok-a",
+                trader_address="0xB", entry_price=0.50, size_shares=100.0,  # +$50
+            )
