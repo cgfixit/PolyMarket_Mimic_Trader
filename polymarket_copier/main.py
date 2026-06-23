@@ -5,11 +5,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import signal
+import sys
 from typing import Optional
 
 from polymarket_copier.api.clob_client import ClobClient
 from polymarket_copier.api.gamma_client import GammaClient
-from polymarket_copier.config import load_config
+from polymarket_copier.config import ConfigError, load_config
 from polymarket_copier.core.copier import CopyTrader
 from polymarket_copier.core.monitor import TradeMonitor
 from polymarket_copier.core.portfolio import PortfolioManager
@@ -146,7 +147,13 @@ def main() -> None:
     parser.add_argument("--config", "-c", help="Path to config.yaml", default=None)
     parser.add_argument("--mode", "-m", choices=["paper", "live"], default=None)
     args = parser.parse_args()
-    asyncio.run(run_bot(config_path=args.config, mode=args.mode))
+    try:
+        asyncio.run(run_bot(config_path=args.config, mode=args.mode))
+    except ConfigError as e:
+        # Invalid configuration — exit cleanly with a clear message instead of
+        # dumping a traceback from deep inside load_config.
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

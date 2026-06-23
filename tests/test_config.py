@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from polymarket_copier.config import AppConfig, load_config
+from polymarket_copier.config import AppConfig, ConfigError, load_config
 
 
 class TestAppConfig:
@@ -69,21 +69,34 @@ class TestAppConfig:
         assert config.mode == "paper"
         assert config.bankroll == 500
 
-    def test_load_config_invalid_bankroll_exits(self, tmp_path, monkeypatch):
-        # A non-numeric BANKROLL env value must fail fast with a clear exit,
-        # not crash with an unhandled ValueError deep in load_config.
+    def test_load_config_invalid_bankroll_raises(self, tmp_path, monkeypatch):
+        # A non-numeric BANKROLL env value must fail fast with a typed,
+        # catchable ConfigError — not a SystemExit, and not a raw ValueError
+        # deep in load_config. This keeps load_config importable/testable.
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump({"mode": "paper"}))
         monkeypatch.setenv("BANKROLL", "not-a-number")
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError, match="BANKROLL must be a number"):
             load_config(config_path=str(config_file))
 
-    def test_load_config_negative_bankroll_exits(self, tmp_path, monkeypatch):
+    def test_load_config_negative_bankroll_raises(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump({"mode": "paper"}))
         monkeypatch.setenv("BANKROLL", "-100")
-        with pytest.raises(SystemExit):
+        with pytest.raises(ConfigError, match="must be positive"):
             load_config(config_path=str(config_file))
+
+    def test_load_config_live_mode_requires_private_key(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "live"}))
+        monkeypatch.delenv("POLY_PRIVATE_KEY", raising=False)
+        with pytest.raises(ConfigError, match="POLY_PRIVATE_KEY required"):
+            load_config(config_path=str(config_file))
+
+    def test_config_error_is_value_error(self):
+        # Subclassing ValueError keeps any existing `except ValueError` callers
+        # working while allowing precise `except ConfigError` handling.
+        assert issubclass(ConfigError, ValueError)
 
     def test_trader_selection_v2_fields(self):
         config = AppConfig()
