@@ -8,6 +8,7 @@ Run: pytest tests/test_risk_manager.py -v
 
 import time
 from datetime import timezone, datetime
+from decimal import Decimal
 import pytest
 
 from polymarket_copier.core.risk_manager import (
@@ -225,7 +226,7 @@ class TestEvaluatePriority:
     @pytest.mark.asyncio
     async def test_daily_loss_takes_priority_over_tp(self, rm):
         pos = await build(rm, 0.50)
-        rm._daily_pnl = -(BANKROLL * CFG.daily_loss_limit_pct) - 1.0
+        rm._daily_pnl = Decimal(str(-(BANKROLL * CFG.daily_loss_limit_pct) - 1.0))
         assert rm.evaluate(pos, pos.tp_price) == ExitReason.DAILY_LOSS_LIMIT
 
     @pytest.mark.asyncio
@@ -402,13 +403,13 @@ class TestDailyLossCircuitBreaker:
     @pytest.mark.asyncio
     async def test_daily_loss_limit_triggers(self, rm):
         pos = await build(rm, 0.50)
-        rm._daily_pnl = -(BANKROLL * CFG.daily_loss_limit_pct) - 0.01
+        rm._daily_pnl = Decimal(str(-(BANKROLL * CFG.daily_loss_limit_pct) - 0.01))
         assert rm.evaluate(pos, 0.60) == ExitReason.DAILY_LOSS_LIMIT
 
     @pytest.mark.asyncio
     async def test_daily_loss_just_below_limit_does_not_trigger(self, rm):
         pos = await build(rm, 0.50)
-        rm._daily_pnl = -(BANKROLL * CFG.daily_loss_limit_pct) + 1.0
+        rm._daily_pnl = Decimal(str(-(BANKROLL * CFG.daily_loss_limit_pct) + 1.0))
         assert rm.evaluate(pos, 0.60) == ExitReason.HOLD
 
     @pytest.mark.asyncio
@@ -425,7 +426,7 @@ class TestDailyLossCircuitBreaker:
             position_id="p1", market_id="m1", token_id="t1",
             trader_address="0xA", entry_price=0.50, size_shares=100.0
         )
-        rm._daily_pnl = -(1_000.0 * 0.005) - 0.01
+        rm._daily_pnl = Decimal(str(-(1_000.0 * 0.005) - 0.01))
         assert rm.evaluate(pos, 0.55) == ExitReason.DAILY_LOSS_LIMIT
 
 
@@ -605,10 +606,10 @@ class TestMidnightUtc:
         """Daily window resets after 86400 seconds have elapsed."""
         # Force the start timestamp far in the past to trigger a reset
         rm._day_start_ts = time.time() - 90_000  # 25 hours ago
-        rm._daily_pnl = -999.0
+        rm._daily_pnl = Decimal("-999")
         # Any evaluate/is_trading_halted call triggers _maybe_reset_daily_window
         rm.is_trading_halted()
-        assert rm._daily_pnl == 0.0
+        assert rm._daily_pnl == Decimal("0")
 
 
 # ─── [O] Exposure cap restored correctly on restart ──────────────────────────
@@ -620,7 +621,7 @@ class TestExposureRestoration:
     async def test_restored_exposure_is_enforced(self):
         rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=BANKROLL)
         # Simulate main.py restoring an existing position
-        existing_value = 700.0  # $700 already in mkt_A
+        existing_value = Decimal("700")  # $700 already in mkt_A
         rm._market_exposure["mkt_A"] = existing_value
 
         # Cap = 8% of $10,000 = $800.  $700 already in, only $100 headroom.
@@ -634,7 +635,7 @@ class TestExposureRestoration:
     @pytest.mark.asyncio
     async def test_restored_exposure_allows_under_cap(self):
         rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=BANKROLL)
-        rm._market_exposure["mkt_A"] = 700.0  # $700 already
+        rm._market_exposure["mkt_A"] = Decimal("700")  # $700 already
 
         # $50 new position fits under the $800 cap
         pos = await rm.build_position(
@@ -642,19 +643,19 @@ class TestExposureRestoration:
             entry_price=0.50, size_shares=100.0,  # $50 at 0.50
         )
         assert pos is not None
-        assert rm._market_exposure["mkt_A"] == pytest.approx(750.0)
+        assert float(rm._market_exposure["mkt_A"]) == pytest.approx(750.0)
 
     def test_no_double_counting_on_same_market(self):
         """Adding exposure for the same market accumulates, not overwrites."""
         rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=BANKROLL)
         # Simulates restoring two open positions in the same market
         rm._market_exposure["mkt_A"] = (
-            rm._market_exposure.get("mkt_A", 0.0) + 300.0
+            rm._market_exposure.get("mkt_A", Decimal("0")) + Decimal("300")
         )
         rm._market_exposure["mkt_A"] = (
-            rm._market_exposure.get("mkt_A", 0.0) + 300.0
+            rm._market_exposure.get("mkt_A", Decimal("0")) + Decimal("300")
         )
-        assert rm._market_exposure["mkt_A"] == pytest.approx(600.0)
+        assert float(rm._market_exposure["mkt_A"]) == pytest.approx(600.0)
 
 
 class TestRehydrateExposure:
@@ -683,13 +684,13 @@ class TestRehydrateExposure:
         assert rm.market_exposure("mkt-a") == pytest.approx(1_000.0)
         assert any("exceeds current cap" in r.message for r in caplog.records)
 
-    def test_rehydrated_exposure_feeds_cap_enforcement(self):
+    async def test_rehydrated_exposure_feeds_cap_enforcement(self):
         # After restoring near-cap exposure, a new copy that would breach the
         # market cap must be rejected by build_position().
         rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=10_000.0)
         rm.rehydrate_exposure("mkt-a", "0xA", 790.0)  # cap is $800
         with pytest.raises(ExposureCapError):
-            rm.build_position(
+            await rm.build_position(
                 position_id="p1", market_id="mkt-a", token_id="tok-a",
                 trader_address="0xB", entry_price=0.50, size_shares=100.0,  # +$50
             )

@@ -39,12 +39,19 @@ import logging
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum, auto
 from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _EPSILON = 1e-9
+_ZERO = Decimal("0")
+
+
+def _to_dec(x: float) -> Decimal:
+    """Convert float to Decimal via str to avoid binary float representation drift."""
+    return Decimal(str(x))
 
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
@@ -176,12 +183,14 @@ class RiskManager:
             raise ValueError(f"Bankroll must be positive. Got: {bankroll}")
         self.cfg               = config
         self.bankroll          = bankroll
-        self._daily_pnl        = 0.0
+        # Decimal accumulators prevent float-rounding drift in circuit-breaker
+        # comparisons and cap enforcement after many add/subtract cycles.
+        self._daily_pnl: Decimal                    = _ZERO
         self._day_start_ts     = _midnight_utc()
         # market_id → total $ value currently allocated in that market
-        self._market_exposure: Dict[str, float] = {}
+        self._market_exposure: Dict[str, Decimal]   = {}
         # trader_address → total $ value currently copied from that trader
-        self._trader_exposure: Dict[str, float] = {}
+        self._trader_exposure: Dict[str, Decimal]   = {}
         self._exposure_lock = asyncio.Lock()
         # Post-loss cooldown state
         self._consecutive_losses: int = 0
@@ -216,6 +225,7 @@ class RiskManager:
             )
 
         position_value = entry_price * size_shares
+        position_value_d = _to_dec(position_value)
 
         async with self._exposure_lock:
             self._assert_exposure_cap(market_id, position_value)
@@ -236,10 +246,10 @@ class RiskManager:
             )
 
             self._market_exposure[market_id] = (
-                self._market_exposure.get(market_id, 0.0) + position_value
+                self._market_exposure.get(market_id, _ZERO) + position_value_d
             )
             self._trader_exposure[trader_address] = (
-                self._trader_exposure.get(trader_address, 0.0) + position_value
+                self._trader_exposure.get(trader_address, _ZERO) + position_value_d
             )
 
         logger.info(
@@ -269,11 +279,12 @@ class RiskManager:
         self._maybe_reset_daily_window()
 
         # 0 ── Daily loss circuit breaker ─────────────────────────────────────
+        daily_pnl_f      = float(self._daily_pnl)
         daily_loss_limit = -(self.bankroll * self.cfg.daily_loss_limit_pct)
-        if self._daily_pnl <= daily_loss_limit:
+        if daily_pnl_f <= daily_loss_limit:
             logger.warning(
                 "DAILY LOSS LIMIT | daily_pnl=%.2f limit=%.2f bankroll=%.2f",
-                self._daily_pnl, daily_loss_limit, self.bankroll,
+                daily_pnl_f, daily_loss_limit, self.bankroll,
             )
             return ExitReason.DAILY_LOSS_LIMIT
 
@@ -349,24 +360,24 @@ class RiskManager:
         pnl = pos.pnl_at(exit_price)
 
         async with self._exposure_lock:
-            self._daily_pnl  += pnl
-            self.bankroll    += pnl
+            self._daily_pnl += _to_dec(pnl)
+            self.bankroll   += pnl
 
-            released = pos.entry_price * pos.size_shares
+            released_d = _to_dec(pos.entry_price * pos.size_shares)
             self._market_exposure[pos.market_id] = max(
-                0.0,
-                self._market_exposure.get(pos.market_id, 0.0) - released,
+                _ZERO,
+                self._market_exposure.get(pos.market_id, _ZERO) - released_d,
             )
             self._trader_exposure[pos.trader_address] = max(
-                0.0,
-                self._trader_exposure.get(pos.trader_address, 0.0) - released,
+                _ZERO,
+                self._trader_exposure.get(pos.trader_address, _ZERO) - released_d,
             )
 
         self._update_cooldown(pnl)
 
         logger.info(
             "record_exit | id=%s exit=%.4f pnl=%+.4f daily_pnl=%+.4f bankroll=%.2f",
-            pos.position_id, exit_price, pnl, self._daily_pnl, self.bankroll,
+            pos.position_id, exit_price, pnl, float(self._daily_pnl), self.bankroll,
         )
         return pnl
 
@@ -397,10 +408,11 @@ class RiskManager:
         """
         self._maybe_reset_daily_window()
 
+        daily_pnl_f      = float(self._daily_pnl)
         daily_loss_limit = -(self.bankroll * self.cfg.daily_loss_limit_pct)
-        if self._daily_pnl <= daily_loss_limit:
+        if daily_pnl_f <= daily_loss_limit:
             return (
-                f"daily loss limit (daily_pnl=${self._daily_pnl:.2f} "
+                f"daily loss limit (daily_pnl=${daily_pnl_f:.2f} "
                 f"<= ${daily_loss_limit:.2f})"
             )
 
@@ -416,7 +428,7 @@ class RiskManager:
 
     def market_exposure(self, market_id: str) -> float:
         """Current $ allocated in a given market."""
-        return self._market_exposure.get(market_id, 0.0)
+        return float(self._market_exposure.get(market_id, _ZERO))
 
     async def release_exposure(
         self, market_id: str, value: float, trader_address: Optional[str] = None
@@ -428,13 +440,14 @@ class RiskManager:
         Pass ``trader_address`` to also release the per-trader allocation that
         build_position() reserved; otherwise it would leak and slowly choke off
         future copies from that trader."""
+        value_d = _to_dec(value)
         async with self._exposure_lock:
             self._market_exposure[market_id] = max(
-                0.0, self._market_exposure.get(market_id, 0.0) - value
+                _ZERO, self._market_exposure.get(market_id, _ZERO) - value_d
             )
             if trader_address is not None:
                 self._trader_exposure[trader_address] = max(
-                    0.0, self._trader_exposure.get(trader_address, 0.0) - value
+                    _ZERO, self._trader_exposure.get(trader_address, _ZERO) - value_d
                 )
 
     def rehydrate_exposure(
@@ -449,29 +462,32 @@ class RiskManager:
         restored exposure breaches the current cap, so an over-exposed restart
         is surfaced to the operator instead of being silently carried (the old
         main.py wrote straight into the private exposure dicts with no check)."""
+        value_d = _to_dec(value)
         self._market_exposure[market_id] = (
-            self._market_exposure.get(market_id, 0.0) + value
+            self._market_exposure.get(market_id, _ZERO) + value_d
         )
         self._trader_exposure[trader_address] = (
-            self._trader_exposure.get(trader_address, 0.0) + value
+            self._trader_exposure.get(trader_address, _ZERO) + value_d
         )
 
+        mkt_exp_f = float(self._market_exposure[market_id])
         market_cap = self.market_exposure_cap()
-        if self._market_exposure[market_id] > market_cap + _EPSILON:
+        if mkt_exp_f > market_cap + _EPSILON:
             logger.warning(
                 "Rehydrated exposure for market %s = $%.2f exceeds current cap "
                 "$%.2f (%.0f%% of $%.2f). No new copies will open here until it "
                 "drops below the cap.",
-                market_id, self._market_exposure[market_id], market_cap,
+                market_id, mkt_exp_f, market_cap,
                 self.cfg.max_market_exposure_pct * 100, self.bankroll,
             )
 
+        trd_exp_f = float(self._trader_exposure[trader_address])
         trader_cap = self.trader_allocation_cap()
-        if self._trader_exposure[trader_address] > trader_cap + _EPSILON:
+        if trd_exp_f > trader_cap + _EPSILON:
             logger.warning(
                 "Rehydrated allocation for trader %s = $%.2f exceeds current cap "
                 "$%.2f (%.0f%% of $%.2f).",
-                trader_address[:10], self._trader_exposure[trader_address],
+                trader_address[:10], trd_exp_f,
                 trader_cap, self.cfg.max_trader_allocation * 100, self.bankroll,
             )
 
@@ -481,14 +497,14 @@ class RiskManager:
 
     def trader_exposure(self, trader_address: str) -> float:
         """Current $ copied from a given trader across all open positions."""
-        return self._trader_exposure.get(trader_address, 0.0)
+        return float(self._trader_exposure.get(trader_address, _ZERO))
 
     def trader_allocation_cap(self) -> float:
         """Per-trader allocation cap in $ terms (changes as bankroll changes)."""
         return self.bankroll * self.cfg.max_trader_allocation
 
     def daily_pnl(self) -> float:
-        return self._daily_pnl
+        return float(self._daily_pnl)
 
     # ── Internal threshold computation ────────────────────────────────────────
 
@@ -542,7 +558,7 @@ class RiskManager:
 
     def _assert_exposure_cap(self, market_id: str, new_value: float) -> None:
         cap     = self.market_exposure_cap()
-        current = self._market_exposure.get(market_id, 0.0)
+        current = float(self._market_exposure.get(market_id, _ZERO))
         if current + new_value > cap:
             raise ExposureCapError(
                 f"Market {market_id}: existing=${current:.2f} + new=${new_value:.2f} "
@@ -552,7 +568,7 @@ class RiskManager:
 
     def _assert_trader_allocation(self, trader_address: str, new_value: float) -> None:
         cap     = self.trader_allocation_cap()
-        current = self._trader_exposure.get(trader_address, 0.0)
+        current = float(self._trader_exposure.get(trader_address, _ZERO))
         if current + new_value > cap:
             raise ExposureCapError(
                 f"Trader {trader_address[:10]}: existing=${current:.2f} + "
@@ -564,8 +580,8 @@ class RiskManager:
         now_utc   = datetime.fromtimestamp(time.time(), tz=timezone.utc)
         start_utc = datetime.fromtimestamp(self._day_start_ts, tz=timezone.utc)
         if now_utc.date() != start_utc.date():
-            logger.info("Daily PnL window reset. Previous daily_pnl=%.2f", self._daily_pnl)
-            self._daily_pnl    = 0.0
+            logger.info("Daily PnL window reset. Previous daily_pnl=%.2f", float(self._daily_pnl))
+            self._daily_pnl    = _ZERO
             self._day_start_ts = _midnight_utc()
 
 
