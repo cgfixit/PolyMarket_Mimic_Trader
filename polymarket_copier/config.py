@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from typing import Optional
 
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+
+class ConfigError(ValueError):
+    """Raised when configuration is invalid (bad bankroll, missing live key, …).
+
+    Raising a typed exception instead of calling sys.exit() keeps load_config
+    importable and unit-testable: callers can assert on the error, and the CLI
+    entrypoint translates it into a clean exit (see main.main())."""
 
 
 class TraderSelectionConfig(BaseModel):
@@ -119,18 +126,14 @@ def load_config(
         try:
             config.bankroll = float(bankroll_str)
         except ValueError:
-            print(
-                f"ERROR: BANKROLL must be a number, got: {bankroll_str!r}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+            raise ConfigError(
+                f"BANKROLL must be a number, got: {bankroll_str!r}"
+            ) from None
 
     if config.bankroll <= 0:
-        print("ERROR: BANKROLL must be positive", file=sys.stderr)
-        sys.exit(1)
+        raise ConfigError("BANKROLL must be positive")
 
     if config.mode == "live" and not config.private_key:
-        print("ERROR: POLY_PRIVATE_KEY required for live mode", file=sys.stderr)
-        sys.exit(1)
+        raise ConfigError("POLY_PRIVATE_KEY required for live mode")
 
     return config

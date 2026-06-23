@@ -18,8 +18,6 @@ from polymarket_copier.models.types import Order
 
 logger = logging.getLogger("polymarket_copier")
 
-_RESOLUTION_BLACKOUT_HOURS = 24.0
-
 
 class CopyTrader:
     """Copies trades from tracked wallets with conservative risk parameters."""
@@ -107,8 +105,9 @@ class CopyTrader:
                         event.market_id[:10])
             return
         if market and market.resolve_time:
+            blackout_hours = self.config.risk_management.resolution_blackout_hours
             hours_to_resolve = (market.resolve_time.timestamp() - time.time()) / 3600
-            if 0 < hours_to_resolve < _RESOLUTION_BLACKOUT_HOURS:
+            if 0 < hours_to_resolve < blackout_hours:
                 logger.info("Skip: market resolves in %.1fh (blackout)", hours_to_resolve)
                 return
 
