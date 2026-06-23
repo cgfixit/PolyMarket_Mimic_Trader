@@ -288,6 +288,11 @@ class RiskManager:
                 return ExitReason.MARKET_RESOLVING
 
         # 2 ── Compute effective peak (do NOT mutate pos — caller persists to DB) ──
+        # peak_price/tp_price/sl_price are Optional in the dataclass but __post_init__
+        # guarantees they are non-None for any Position built via build_position().
+        assert pos.peak_price is not None
+        assert pos.tp_price is not None
+        assert pos.sl_price is not None
         effective_peak = max(pos.peak_price, current_price)
 
         # 3 ── Take profit ──────────────────────────────────────────────────────
@@ -490,6 +495,8 @@ class RiskManager:
         Trailing SL = peak − (peak − hard_SL) × trailing_fraction.
         Never drops below the hard SL.
         """
+        assert pos.sl_price is not None
+        assert pos.peak_price is not None
         peak     = peak_override if peak_override is not None else pos.peak_price
         gap      = peak - pos.sl_price
         trail_sl = peak - (gap * self.cfg.trailing_stop_fraction)

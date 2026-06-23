@@ -369,7 +369,7 @@ class CopyTrader:
             # in-memory state.
             reason = self.risk.evaluate(pos, tick.price)
 
-            if tick.price > pos.peak_price:
+            if pos.peak_price is None or tick.price > pos.peak_price:
                 await self.portfolio.update_peak_price(pos.position_id, tick.price)
 
             if reason != ExitReason.HOLD:
