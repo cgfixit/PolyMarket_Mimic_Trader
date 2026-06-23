@@ -58,7 +58,7 @@ class ClobClient:
         except ImportError:
             raise ImportError(
                 "py-clob-client required for live trading: pip install py-clob-client"
-            )
+            ) from None
 
     async def get_order_book(self, token_id: str) -> dict[str, Any]:
         if self.paper_mode:

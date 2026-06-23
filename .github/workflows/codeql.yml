@@ -2,9 +2,9 @@ name: "CodeQL – PolyMarket Mimic Trader"
 
 on:
   push:
-    branches: [ "main", "dev" ]          # track both main & dev
+    branches: [ "main", "claude/**" ]    # match the branches CI actually uses
   pull_request:
-    branches: [ "main", "dev" ]
+    branches: [ "main" ]
   schedule:
     # Every Monday at 03:37 UTC
     - cron: '37 3 * * 1'

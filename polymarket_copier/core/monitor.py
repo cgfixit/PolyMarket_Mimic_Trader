@@ -366,7 +366,7 @@ class TradeMonitor:
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for wallet, result in zip(self._wallets, results):
+        for wallet, result in zip(self._wallets, results, strict=True):
             if isinstance(result, Exception):
                 logger.warning("Poll failed for wallet %s: %s", wallet[:10], result)
 
