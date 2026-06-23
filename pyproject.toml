@@ -10,9 +10,12 @@ target-version = "py310"
 extend-exclude = [".claude", "data"]
 
 [tool.ruff.lint]
-# Keep the rule set lenient but useful: catch real bugs (pyflakes),
-# undefined names, and unused imports without enforcing strict style.
-select = ["E", "F", "W"]
+# Catch real bugs without enforcing strict style:
+#   E/F/W  — pycodestyle + pyflakes (undefined names, unused imports)
+#   B      — flake8-bugbear (likely bugs: bad zip pairing, except chaining, …)
+#   ASYNC  — flake8-async (blocking calls / sleeps inside async — directly
+#            relevant for a latency-sensitive async trading bot)
+select = ["E", "F", "W", "B", "ASYNC"]
 ignore = [
     "E501",  # line too long (handled by formatter, not enforced here)
     "E741",  # ambiguous variable name (e.g. `l`)

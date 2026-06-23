@@ -260,7 +260,7 @@ class TrackerClient:
             all_stats_raw = await asyncio.gather(*stats_tasks, return_exceptions=True)
 
             all_stats: List[TraderStats] = []
-            for entry, result in zip(candidates, all_stats_raw):
+            for entry, result in zip(candidates, all_stats_raw, strict=True):
                 if isinstance(result, Exception):
                     logger.warning(
                         "Stats fetch failed for %s: %s",
