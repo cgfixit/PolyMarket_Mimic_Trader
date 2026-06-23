@@ -616,7 +616,8 @@ class TestMidnightUtc:
 class TestExposureRestoration:
     """Simulate the startup loop in main.py that reconstructs exposure from DB."""
 
-    def test_restored_exposure_is_enforced(self):
+    @pytest.mark.asyncio
+    async def test_restored_exposure_is_enforced(self):
         rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=BANKROLL)
         # Simulate main.py restoring an existing position
         existing_value = 700.0  # $700 already in mkt_A
@@ -625,17 +626,18 @@ class TestExposureRestoration:
         # Cap = 8% of $10,000 = $800.  $700 already in, only $100 headroom.
         # A new position worth $200 should breach the cap.
         with pytest.raises(ExposureCapError):
-            rm.build_position(
+            await rm.build_position(
                 "new_pos", "mkt_A", "tok_A", "0xNEW",
                 entry_price=0.50, size_shares=400.0,  # $200 at 0.50
             )
 
-    def test_restored_exposure_allows_under_cap(self):
+    @pytest.mark.asyncio
+    async def test_restored_exposure_allows_under_cap(self):
         rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=BANKROLL)
         rm._market_exposure["mkt_A"] = 700.0  # $700 already
 
         # $50 new position fits under the $800 cap
-        pos = rm.build_position(
+        pos = await rm.build_position(
             "new_pos", "mkt_A", "tok_A", "0xNEW",
             entry_price=0.50, size_shares=100.0,  # $50 at 0.50
         )

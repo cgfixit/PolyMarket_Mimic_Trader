@@ -65,11 +65,11 @@ class TestPortfolioManager:
         # Two traders copied into separate positions on the SAME token. Both
         # must be returned so per-tick exit evaluation never orphans the second.
         shared = "tok-shared"
-        pos_a = rm.build_position(
+        pos_a = await rm.build_position(
             position_id="pos-a", market_id="mkt-a", token_id=shared,
             trader_address="0xA", entry_price=0.50, size_shares=100.0,
         )
-        pos_b = rm.build_position(
+        pos_b = await rm.build_position(
             position_id="pos-b", market_id="mkt-a", token_id=shared,
             trader_address="0xB", entry_price=0.50, size_shares=100.0,
         )
@@ -125,9 +125,9 @@ class TestPortfolioManager:
     @pytest.mark.asyncio
     async def test_trader_win_rate_counts_wins_and_sample(self, portfolio, rm):
         # 2 wins, 1 loss for the trader → win_rate=2/3, sample=3.
-        pos1 = make_position(rm, market_id="a", entry=0.50, size=1000.0, trader="0xw")
-        pos2 = make_position(rm, market_id="b", entry=0.50, size=1000.0, trader="0xw")
-        pos3 = make_position(rm, market_id="c", entry=0.50, size=1000.0, trader="0xw")
+        pos1 = await make_position(rm, market_id="a", entry=0.50, size=1000.0, trader="0xw")
+        pos2 = await make_position(rm, market_id="b", entry=0.50, size=1000.0, trader="0xw")
+        pos3 = await make_position(rm, market_id="c", entry=0.50, size=1000.0, trader="0xw")
         await portfolio.open_position(pos1)
         await portfolio.open_position(pos2)
         await portfolio.open_position(pos3)
@@ -146,7 +146,7 @@ class TestPortfolioManager:
     @pytest.mark.asyncio
     async def test_trader_win_rate_ignores_open_positions(self, portfolio, rm):
         # Open positions are not yet realized; only closed ones count.
-        pos = make_position(rm, market_id="a", trader="0xw")
+        pos = await make_position(rm, market_id="a", trader="0xw")
         await portfolio.open_position(pos)
         win_rate, sample = await portfolio.get_trader_win_rate("0xw")
         assert (win_rate, sample) == (0.0, 0)

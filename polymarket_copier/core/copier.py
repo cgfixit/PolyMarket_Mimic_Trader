@@ -248,7 +248,7 @@ class CopyTrader:
         if filled_shares <= 0.0:
             # No fill: release the FULL registered notional and abort without
             # opening a position or subscribing the token.
-            self.risk.release_exposure(
+            await self.risk.release_exposure(
                 pos.market_id, registered_notional, pos.trader_address
             )
             logger.info(
@@ -265,7 +265,7 @@ class CopyTrader:
             # registered_notional.
             unfilled_fraction = (size_shares - filled_shares) / size_shares
             release_value = registered_notional * unfilled_fraction
-            self.risk.release_exposure(
+            await self.risk.release_exposure(
                 pos.market_id, release_value, pos.trader_address
             )
             pos.size_shares = filled_shares
