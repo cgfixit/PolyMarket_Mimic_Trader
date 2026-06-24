@@ -128,5 +128,6 @@ class TestAppConfig:
 
     def test_invalid_order_type_rejected(self):
         # M5: order types are typed as the CLOB's Literal set; bad values are rejected.
-        with pytest.raises(Exception):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
             AppConfig(copy_trading={"entry_order_type": "BOGUS"})
