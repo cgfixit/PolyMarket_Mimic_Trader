@@ -114,7 +114,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
             if tracker.needs_rebalance:
                 new_traders = await tracker.refresh()
                 if new_traders:
-                    monitor._wallets = [t.stats.address for t in new_traders]
+                    monitor.set_wallets([t.stats.address for t in new_traders])
                     copier.update_tracker_win_rates(
                         {t.stats.address: t.stats.win_rate for t in new_traders}
                     )

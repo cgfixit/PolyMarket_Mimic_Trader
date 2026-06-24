@@ -228,6 +228,21 @@ class TradeMonitor:
         """Remove a token from the real-time price feed (after position closed)."""
         self._subscribed_tokens.discard(token_id)
 
+    def set_wallets(self, wallets: list[str]) -> None:
+        """Replace the tracked-wallet list without losing seen-id state for retained wallets.
+
+        C5 fix: poking ``monitor._wallets`` directly at rebalance left any newly-added
+        wallet without a ``_seen_trade_ids`` entry → KeyError in ``_filter_new_trades``
+        swallowed by ``return_exceptions=True`` → the new wallet was silently never polled
+        until restart.  This method initialises the seen-id dict for new wallets so their
+        first poll primes the baseline (cold-start guard) rather than KeyError-ing out.
+        """
+        wallets = [w.lower() for w in wallets]
+        for w in wallets:
+            self._seen_trade_ids.setdefault(w, OrderedDict())
+            # New wallets are absent from _primed_wallets → first poll primes them.
+        self._wallets = wallets
+
     @property
     def ws_healthy(self) -> bool:
         return self._ws_healthy

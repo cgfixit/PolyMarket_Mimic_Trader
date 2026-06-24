@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import functools
 import logging
+import threading
 from typing import Any, Optional
 
 from polymarket_copier.config import AppConfig
@@ -23,42 +27,69 @@ class ClobClient:
 
     In paper mode, orders are logged but not sent. In live mode, uses
     py-clob-client to sign and submit orders.
+
+    C1 fix: all blocking py-clob-client calls (EIP-712 signing + requests POST)
+    run in a dedicated ThreadPoolExecutor so they never stall the asyncio event
+    loop. The 8 s poll budget and every open position's TP/SL evaluation continue
+    uninterrupted while an order is in flight.
     """
 
     def __init__(self, config: AppConfig):
         self.config = config
         self.paper_mode = config.mode == "paper"
         self._client: Any = None
+        # Threading lock protects the lazy-init guard against concurrent threads
+        # in the executor both seeing _client=None and double-initialising.
+        self._init_lock = threading.Lock()
+        # Dedicated thread pool for blocking CLOB calls (signing + HTTP).
+        # Not created in paper mode — there are no blocking calls there.
+        self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = (
+            None if self.paper_mode
+            else concurrent.futures.ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="clob-signer"
+            )
+        )
+
+    async def _run_blocking(self, fn) -> Any:
+        """Run a zero-arg callable in the CLOB thread pool without blocking the loop."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, fn)
+
+    async def close(self) -> None:
+        """Shut down the signer thread pool (call on bot shutdown)."""
+        if self._executor:
+            self._executor.shutdown(wait=False)
 
     def _init_live_client(self) -> None:
-        if self._client is not None:
-            return
-        if not self.config.private_key:
-            raise ValueError("POLY_PRIVATE_KEY required for live trading")
-        try:
-            from py_clob_client.client import ClobClient as _ClobClient
+        with self._init_lock:
+            if self._client is not None:
+                return
+            if not self.config.private_key:
+                raise ValueError("POLY_PRIVATE_KEY required for live trading")
+            try:
+                from py_clob_client.client import ClobClient as _ClobClient
 
-            self._client = _ClobClient(
-                CLOB_BASE,
-                key=self.config.private_key,
-                chain_id=CHAIN_ID,
-            )
-            if self.config.api_key and self.config.api_secret:
-                self._client.set_api_creds(
-                    type("Creds", (), {
-                        "api_key": self.config.api_key,
-                        "api_secret": self.config.api_secret,
-                        "api_passphrase": self.config.api_passphrase,
-                    })()
+                self._client = _ClobClient(
+                    CLOB_BASE,
+                    key=self.config.private_key,
+                    chain_id=CHAIN_ID,
                 )
-            else:
-                creds = self._client.create_or_derive_api_creds()
-                self._client.set_api_creds(creds)
-            logger.info("Live CLOB client initialized")
-        except ImportError:
-            raise ImportError(
-                "py-clob-client required for live trading: pip install py-clob-client"
-            ) from None
+                if self.config.api_key and self.config.api_secret:
+                    self._client.set_api_creds(
+                        type("Creds", (), {
+                            "api_key": self.config.api_key,
+                            "api_secret": self.config.api_secret,
+                            "api_passphrase": self.config.api_passphrase,
+                        })()
+                    )
+                else:
+                    creds = self._client.create_or_derive_api_creds()
+                    self._client.set_api_creds(creds)
+                logger.info("Live CLOB client initialized")
+            except ImportError:
+                raise ImportError(
+                    "py-clob-client required for live trading: pip install py-clob-client"
+                ) from None
 
     async def get_order_book(self, token_id: str) -> dict[str, Any]:
         if self.paper_mode:
@@ -66,6 +97,12 @@ class ClobClient:
                 "bids": [{"price": "0.50", "size": "10000"}],
                 "asks": [{"price": "0.51", "size": "10000"}],
             }
+        # C1: run in thread pool so the HTTP GET doesn't stall the event loop.
+        return await self._run_blocking(
+            functools.partial(self._get_order_book_sync, token_id)
+        )
+
+    def _get_order_book_sync(self, token_id: str) -> dict[str, Any]:
         self._init_live_client()
         return self._client.get_order_book(token_id)
 
@@ -131,20 +168,47 @@ class ClobClient:
             )
             return result
 
-        self._init_live_client()
-        from py_clob_client.order_builder.constants import BUY as CLOB_BUY, SELL as CLOB_SELL
+        # C1: run signing + HTTP POST in thread pool — never blocks the event loop.
+        # C2: pass the order_type field through so GTC/FOK/FAK are honoured on live orders.
+        #     Also price aggressively through the book (slippage cap) so FOK entries
+        #     cross the spread and FAK exits hit the bid — not a resting mid-limit.
+        slippage_cap = self.config.copy_trading.max_live_slippage_pct
+        if order.side == "BUY":
+            exec_price = min(order.price * (1.0 + slippage_cap), 1.0)
+        else:
+            exec_price = max(order.price * (1.0 - slippage_cap), 0.0)
 
-        side = CLOB_BUY if order.side == "BUY" else CLOB_SELL
         size_shares = order.size_usdc / order.price if order.price > 0 else 0
-        signed_order = self._client.create_and_post_order(
-            token_id=order.token_id,
-            price=order.price,
-            size=size_shares,
-            side=side,
-        )
+        order_type_str = order.order_type  # capture for closure
+
+        def _place_sync() -> Any:
+            self._init_live_client()
+            from py_clob_client.order_builder.constants import BUY as CLOB_BUY, SELL as CLOB_SELL
+            side = CLOB_BUY if order.side == "BUY" else CLOB_SELL
+            kwargs: dict[str, Any] = dict(
+                token_id=order.token_id,
+                price=exec_price,
+                size=size_shares,
+                side=side,
+            )
+            # Wire the order type through; graceful fallback if clob_types unavailable.
+            try:
+                from py_clob_client.clob_types import OrderType
+                otype = {
+                    "GTC": OrderType.GTC,
+                    "FOK": OrderType.FOK,
+                    "FAK": getattr(OrderType, "FAK", OrderType.FOK),
+                    "GTD": getattr(OrderType, "GTD", OrderType.GTC),
+                }.get(order_type_str, OrderType.GTC)
+                kwargs["order_type"] = otype
+            except ImportError:
+                pass  # older py-clob-client: fall through without order_type
+            return self._client.create_and_post_order(**kwargs)
+
+        signed_order = await self._run_blocking(_place_sync)
         logger.info(
-            "[LIVE] Order: %s $%.2f @ %.4f -> %s",
-            order.side, order.size_usdc, order.price, signed_order,
+            "[LIVE] Order: %s %s $%.2f @ %.4f (exec %.4f) -> %s",
+            order.order_type, order.side, order.size_usdc, order.price, exec_price, signed_order,
         )
         return {"status": "LIVE", "result": signed_order}
 
@@ -152,9 +216,13 @@ class ClobClient:
         if self.paper_mode:
             logger.info("[PAPER] Cancel: %s", order_id)
             return True
-        self._init_live_client()
-        try:
+        # C1: cancellations are also blocking HTTP calls.
+        def _cancel_sync() -> None:
+            self._init_live_client()
             self._client.cancel(order_id)
+
+        try:
+            await self._run_blocking(_cancel_sync)
             return True
         except Exception as e:
             logger.error("Failed to cancel %s: %s", order_id, e)
@@ -163,9 +231,12 @@ class ClobClient:
     async def get_balance(self) -> Optional[float]:
         if self.paper_mode:
             return self.config.bankroll
-        self._init_live_client()
-        try:
+        def _balance_sync() -> float:
+            self._init_live_client()
             return float(self._client.get_balance())
+
+        try:
+            return await self._run_blocking(_balance_sync)
         except Exception as e:
             logger.error("Failed to get balance: %s", e)
             return None

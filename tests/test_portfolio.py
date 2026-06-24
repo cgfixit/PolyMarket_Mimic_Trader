@@ -198,6 +198,45 @@ class TestUninitializedGuard:
             await pm.get_open_positions()
 
 
+class TestDoubleExitGuard:
+    """C4: close_position must be idempotent — a second call on an already-closed
+    position returns 0.0 and does NOT insert a second realized-lot row."""
+
+    @pytest.mark.asyncio
+    async def test_second_close_returns_zero(self, portfolio, rm):
+        pos = await make_position(rm, entry=0.50, size=100.0)
+        await portfolio.open_position(pos)
+        pnl1 = await portfolio.close_position(pos.position_id, 0.60, ExitReason.TAKE_PROFIT)
+        pnl2 = await portfolio.close_position(pos.position_id, 0.60, ExitReason.TAKE_PROFIT)
+        assert pnl1 == pytest.approx(10.0)
+        assert pnl2 == 0.0  # race guard: already closed
+
+    @pytest.mark.asyncio
+    async def test_second_close_does_not_add_extra_lot(self, portfolio, rm):
+        pos = await make_position(rm, entry=0.50, size=100.0)
+        await portfolio.open_position(pos)
+        await portfolio.close_position(pos.position_id, 0.60, ExitReason.TAKE_PROFIT)
+        await portfolio.close_position(pos.position_id, 0.60, ExitReason.TAKE_PROFIT)
+        report = await portfolio.realized_pnl_report()
+        # Only one disposal recorded, not two.
+        assert report["disposals"] == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_closes_produce_one_lot(self, portfolio, rm):
+        """Simulates a race: two coroutines calling close_position concurrently."""
+        import asyncio as _asyncio
+        pos = await make_position(rm, entry=0.50, size=100.0)
+        await portfolio.open_position(pos)
+        pnls = await _asyncio.gather(
+            portfolio.close_position(pos.position_id, 0.60, ExitReason.TAKE_PROFIT),
+            portfolio.close_position(pos.position_id, 0.60, ExitReason.TAKE_PROFIT),
+        )
+        # Exactly one winner; the other returns 0.0.
+        assert sorted(pnls) == pytest.approx([0.0, 10.0])
+        report = await portfolio.realized_pnl_report()
+        assert report["disposals"] == 1
+
+
 class TestRealizedPnlLedger:
     """The tax-lot ledger written on close_position() and its reporting."""
 

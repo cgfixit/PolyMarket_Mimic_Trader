@@ -26,4 +26,4 @@ class Order(BaseModel):
     side: Literal["BUY", "SELL"]
     price: float = Field(ge=0.0, le=1.0)
     size_usdc: float = Field(gt=0.0)
-    order_type: Literal["GTC", "FOK", "GTD"] = "GTC"
+    order_type: Literal["GTC", "FOK", "GTD", "FAK"] = "GTC"
