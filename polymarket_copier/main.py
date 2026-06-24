@@ -115,6 +115,10 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
     copier.update_tracker_win_rates(
         {t.stats.address: t.stats.win_rate for t in top_traders}
     )
+    # H18: feed the demonstrated-edge signal (mean per-trade ROI) for Kelly seeding.
+    copier.update_tracker_mean_pnl(
+        {t.stats.address: t.stats.mean_pnl for t in top_traders}
+    )
 
     monitor = TradeMonitor(
         tracked_wallets=wallets,
@@ -180,6 +184,9 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
                     monitor.set_wallets([t.stats.address for t in new_traders])
                     copier.update_tracker_win_rates(
                         {t.stats.address: t.stats.win_rate for t in new_traders}
+                    )
+                    copier.update_tracker_mean_pnl(
+                        {t.stats.address: t.stats.mean_pnl for t in new_traders}
                     )
                     _update_tracker_metrics(tracker)
                     logger.info("Rebalanced: now tracking %d wallets", len(monitor._wallets))

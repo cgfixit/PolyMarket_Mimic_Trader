@@ -131,3 +131,27 @@ class TestAppConfig:
         from pydantic import ValidationError
         with pytest.raises(ValidationError):
             AppConfig(copy_trading={"entry_order_type": "BOGUS"})
+
+    def test_chunk6_kelly_execution_fields(self):
+        # Chunk 6 (H18/M3/M4/M11/M12) knobs and their new defaults.
+        config = AppConfig()
+        assert config.copy_trading.kelly_min_trades == 50                  # M3
+        assert config.copy_trading.kelly_edge_shrink == 0.5                # H18
+        assert config.copy_trading.kelly_max_edge == 0.20                  # H18
+        assert config.copy_trading.tracker_prior_decay_enabled is True     # M4
+        assert config.copy_trading.slippage_size_threshold_usdc == 500.0   # M11
+        assert config.copy_trading.slippage_size_coeff == 0.5              # M11
+        assert config.copy_trading.slippage_size_max_mult == 3.0           # M11
+        assert config.copy_trading.live_order_timeout_seconds == 8.0       # M12
+        assert config.copy_trading.live_retry_slippage_pct == 0.02         # M12
+        assert config.copy_trading.live_order_max_retries == 1             # M12
+
+    def test_live_retry_slippage_validator(self):
+        # M12: retry slippage must be >= base cap and <= 0.05 ceiling; retries in {0,1}.
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AppConfig(copy_trading={"max_live_slippage_pct": 0.03, "live_retry_slippage_pct": 0.01})
+        with pytest.raises(ValidationError):
+            AppConfig(copy_trading={"live_retry_slippage_pct": 0.10})  # > 0.05 ceiling
+        with pytest.raises(ValidationError):
+            AppConfig(copy_trading={"live_order_max_retries": 2})

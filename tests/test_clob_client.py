@@ -9,9 +9,15 @@ optional `py-clob-client` dependency or any network access.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
-from polymarket_copier.api.clob_client import ClobClient, InsufficientLiquidityError
+from polymarket_copier.api.clob_client import (
+    ClobClient,
+    InsufficientLiquidityError,
+    _extract_live_fields,
+)
 from polymarket_copier.config import AppConfig
 from polymarket_copier.models.types import Order
 
@@ -188,8 +194,229 @@ class TestLiveSlippageCap:
             paper_client._check_liquidity(book, price=0.50, size_usdc=100.0)
 
     def test_error_message_includes_configured_pct(self, paper_client):
-        """InsufficientLiquidityError message must show the configured cap, not '1%'."""
+        """The VWAP-exceeds-cap error must show the configured cap, not a hardcoded 1%."""
         paper_client.config.copy_trading.max_live_slippage_pct = 0.03
-        book = {"asks": [{"price": "0.50", "size": "1"}]}  # thin book
+        # Ample depth, but priced 20% above → VWAP breaches the 3% cap.
+        book = {"asks": [{"price": "0.60", "size": "500"}]}
         with pytest.raises(InsufficientLiquidityError, match="3.0%"):
             paper_client._check_liquidity(book, price=0.50, size_usdc=100.0)
+
+    def test_insufficient_total_depth_raises(self, paper_client):
+        """Too few total shares on the ask side → raise (regardless of price)."""
+        book = {"asks": [{"price": "0.50", "size": "1"}]}  # only 1 share, need 200
+        with pytest.raises(InsufficientLiquidityError, match="only holds"):
+            paper_client._check_liquidity(book, price=0.50, size_usdc=100.0)
+
+    def test_vwap_rejects_thin_top_deep_book(self, paper_client):
+        """M11: a thin top-of-ask inside the cap plus the bulk of depth ABOVE it must
+        be rejected — the old sum-of-shares-below-max-price check missed this."""
+        paper_client.config.copy_trading.max_live_slippage_pct = 0.01  # max_price 0.505
+        book = {"asks": [
+            {"price": "0.505", "size": "5"},     # tiny slice inside the cap
+            {"price": "0.70", "size": "1000"},   # the real depth, far above the cap
+        ]}
+        # need 200 shares; VWAP = (5*0.505 + 195*0.70)/200 ≈ 0.695 >> 0.505 → reject.
+        with pytest.raises(InsufficientLiquidityError, match="VWAP"):
+            paper_client._check_liquidity(book, price=0.50, size_usdc=100.0)
+
+    def test_vwap_small_order_fills_at_top(self, paper_client):
+        """A small order fillable entirely at the top ask passes the VWAP gate."""
+        book = {"asks": [
+            {"price": "0.501", "size": "1000"},  # within 1% cap, ample depth
+            {"price": "0.90", "size": "1000"},
+        ]}
+        paper_client._check_liquidity(book, price=0.50, size_usdc=100.0)  # need 200, all @0.501
+
+
+class TestSizeAwareSlippage:
+    """M11: _size_multiplier / _effective_slippage scale slippage up with order size."""
+
+    def test_below_threshold_is_unity(self, paper_client):
+        paper_client.config.copy_trading.slippage_size_threshold_usdc = 500.0
+        paper_client.config.copy_trading.slippage_size_coeff = 0.5
+        assert paper_client._size_multiplier(100.0) == 1.0
+        assert paper_client._size_multiplier(500.0) == 1.0  # at threshold, still unity
+
+    def test_scales_sqrt_above_threshold(self, paper_client):
+        paper_client.config.copy_trading.slippage_size_threshold_usdc = 500.0
+        paper_client.config.copy_trading.slippage_size_coeff = 0.5
+        paper_client.config.copy_trading.slippage_size_max_mult = 3.0
+        # size = 4*threshold → sqrt(4)=2 → 1 + 0.5*(2-1) = 1.5
+        assert paper_client._size_multiplier(2000.0) == pytest.approx(1.5)
+
+    def test_capped_at_max_mult(self, paper_client):
+        paper_client.config.copy_trading.slippage_size_threshold_usdc = 500.0
+        paper_client.config.copy_trading.slippage_size_coeff = 0.5
+        paper_client.config.copy_trading.slippage_size_max_mult = 3.0
+        assert paper_client._size_multiplier(1_000_000.0) == 3.0
+
+    def test_coeff_zero_disables(self, paper_client):
+        paper_client.config.copy_trading.slippage_size_coeff = 0.0
+        assert paper_client._size_multiplier(1_000_000.0) == 1.0
+
+    def test_effective_slippage_scales_base(self, paper_client):
+        paper_client.config.copy_trading.max_live_slippage_pct = 0.01
+        paper_client.config.copy_trading.slippage_size_threshold_usdc = 500.0
+        paper_client.config.copy_trading.slippage_size_coeff = 0.5
+        assert paper_client._effective_slippage(100.0) == pytest.approx(0.01)   # base
+        assert paper_client._effective_slippage(2000.0) == pytest.approx(0.015)  # 1.5x
+
+    @pytest.mark.asyncio
+    async def test_paper_large_order_costs_more(self, paper_client):
+        """A >threshold paper order fills at a worse price than a small one (scaled slip)."""
+        paper_client.config.copy_trading.paper_fill_slippage_pct = 0.005
+        paper_client.config.copy_trading.paper_taker_fee_pct = 0.02
+        paper_client.config.copy_trading.slippage_size_threshold_usdc = 500.0
+        paper_client.config.copy_trading.slippage_size_coeff = 0.5
+        small = await paper_client.place_order(buy_order(price=0.50, size_usdc=100.0))
+        large = await paper_client.place_order(buy_order(price=0.50, size_usdc=4500.0))
+        assert large["fill_price"] > small["fill_price"]
+
+
+def _gtc_order(price=0.50, size_usdc=100.0) -> Order:
+    return Order(market_id="mkt-a", token_id="tok-a", side="BUY",
+                 price=price, size_usdc=size_usdc, order_type="GTC")
+
+
+def _orchestrator_client(timeout=0.05) -> ClobClient:
+    """A client forced into the live orchestrator path (paper_mode off) with the
+    venue methods mocked, so the M12 state machine runs without any network."""
+    c = ClobClient(AppConfig(mode="paper", bankroll=10_000))
+    c.paper_mode = False  # force place_order_with_timeout's resting-order branch
+    c.config.copy_trading.live_order_timeout_seconds = timeout
+    c.config.copy_trading.live_retry_slippage_pct = 0.02
+    c.config.copy_trading.max_live_slippage_pct = 0.01
+    c.config.copy_trading.live_order_max_retries = 1
+    return c
+
+
+class TestExtractLiveFields:
+    def test_extracts_variants(self):
+        oid, filled, avg = _extract_live_fields(
+            {"orderID": "o1", "matched_amount": "40", "price": "0.51"}
+        )
+        assert oid == "o1" and filled == 40.0 and avg == 0.51
+
+    def test_missing_fields_are_none(self):
+        assert _extract_live_fields({}) == (None, None, None)
+        assert _extract_live_fields("not-a-dict") == (None, None, None)
+
+
+class TestPlaceOrderWithTimeout:
+    """M12: cancel + confirm + retry-remainder-once for resting live orders, with
+    hard double-position safety. FOK/FAK/paper bypass the path entirely."""
+
+    @pytest.mark.asyncio
+    async def test_paper_delegates(self, paper_client):
+        # Paper mode → straight delegate to place_order (PAPER result).
+        res = await paper_client.place_order_with_timeout(_gtc_order())
+        assert res["status"] == "PAPER"
+
+    @pytest.mark.asyncio
+    async def test_fok_delegates_no_cancel(self):
+        c = _orchestrator_client()
+        c.place_order = AsyncMock(return_value={"status": "LIVE", "order_id": "o1",
+                                                "filled_size": 200.0, "avg_price": 0.50})
+        c.cancel_order = AsyncMock()
+        c.get_order = AsyncMock()
+        order = Order(market_id="m", token_id="t", side="BUY", price=0.50,
+                      size_usdc=100.0, order_type="FOK")
+        await c.place_order_with_timeout(order)
+        c.place_order.assert_awaited_once()  # single shot
+        c.cancel_order.assert_not_awaited()
+        c.get_order.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_timeout_zero_disables(self):
+        c = _orchestrator_client(timeout=0.0)
+        c.place_order = AsyncMock(return_value={"status": "LIVE", "order_id": "o1",
+                                                "filled_size": 0.0, "avg_price": None})
+        c.cancel_order = AsyncMock()
+        await c.place_order_with_timeout(_gtc_order())
+        c.place_order.assert_awaited_once()
+        c.cancel_order.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_filled_within_timeout_no_retry(self):
+        c = _orchestrator_client()
+        # First post rests (0), then get_order reports a full fill → no cancel/retry.
+        c.place_order = AsyncMock(return_value={"status": "LIVE", "order_id": "o1",
+                                                "filled_size": 0.0, "avg_price": None})
+        c.get_order = AsyncMock(return_value={"filled_size": 200.0, "avg_price": 0.50})
+        c.cancel_order = AsyncMock()
+        res = await c.place_order_with_timeout(_gtc_order())
+        assert res["filled_size"] == 200.0
+        c.cancel_order.assert_not_awaited()
+        assert c.place_order.await_count == 1  # no retry
+
+    @pytest.mark.asyncio
+    async def test_unfilled_cancels_and_retries_remainder(self):
+        c = _orchestrator_client()
+        c.place_order = AsyncMock(side_effect=[
+            {"status": "LIVE", "order_id": "o1", "filled_size": 0.0, "avg_price": None},
+            {"status": "LIVE", "order_id": "o2", "filled_size": 200.0, "avg_price": 0.52},
+        ])
+        c.get_order = AsyncMock(return_value={"filled_size": 0.0, "avg_price": None})
+        c.cancel_order = AsyncMock(return_value=True)
+        res = await c.place_order_with_timeout(_gtc_order(price=0.50, size_usdc=100.0))
+        # Retry placed; second place_order sized to the FULL remainder (200 shares
+        # → 100 usdc) at the WIDER retry slippage.
+        assert c.place_order.await_count == 2
+        retry_call = c.place_order.await_args_list[1]
+        retry_order = retry_call.args[0]
+        assert retry_order.size_usdc == pytest.approx(100.0)        # 200 shares * 0.50
+        assert retry_call.kwargs["slippage_override"] == 0.02       # wider cap
+        assert res["filled_size"] == pytest.approx(200.0)
+        assert res["avg_price"] == pytest.approx(0.52)
+
+    @pytest.mark.asyncio
+    async def test_retry_sizes_only_remaining_shares(self):
+        # Attempt 1 partially fills 40/200; the retry must request only 160 shares.
+        c = _orchestrator_client()
+        c.place_order = AsyncMock(side_effect=[
+            {"status": "LIVE", "order_id": "o1", "filled_size": 40.0, "avg_price": 0.50},
+            {"status": "LIVE", "order_id": "o2", "filled_size": 160.0, "avg_price": 0.52},
+        ])
+        c.get_order = AsyncMock(return_value={"filled_size": 40.0, "avg_price": 0.50})
+        c.cancel_order = AsyncMock(return_value=True)
+        res = await c.place_order_with_timeout(_gtc_order(price=0.50, size_usdc=100.0))
+        retry_order = c.place_order.await_args_list[1].args[0]
+        assert retry_order.size_usdc == pytest.approx(80.0)  # 160 shares * 0.50, NOT 200
+        # Merged: 40@0.50 + 160@0.52 = 200 shares, size-weighted avg 0.516.
+        assert res["filled_size"] == pytest.approx(200.0)
+        assert res["avg_price"] == pytest.approx((40 * 0.50 + 160 * 0.52) / 200)
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_cancel_fails(self):
+        c = _orchestrator_client()
+        c.place_order = AsyncMock(return_value={"status": "LIVE", "order_id": "o1",
+                                                "filled_size": 0.0, "avg_price": None})
+        c.get_order = AsyncMock(return_value={"filled_size": 0.0, "avg_price": None})
+        c.cancel_order = AsyncMock(return_value=False)  # cancel fails → ambiguous
+        res = await c.place_order_with_timeout(_gtc_order())
+        assert c.place_order.await_count == 1  # NO second order
+        assert res["filled_size"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_confirm_ambiguous(self):
+        c = _orchestrator_client()
+        c.place_order = AsyncMock(return_value={"status": "LIVE", "order_id": "o1",
+                                                "filled_size": 0.0, "avg_price": None})
+        # get_order can never give a concrete fill (None) → ambiguous → never retry.
+        c.get_order = AsyncMock(return_value=None)
+        c.cancel_order = AsyncMock(return_value=True)
+        res = await c.place_order_with_timeout(_gtc_order())
+        assert c.place_order.await_count == 1  # NO retry on ambiguous confirm
+        assert res["filled_size"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_remainder_below_min(self):
+        # Confirmed fill leaves < _MIN_RETRY_SHARES unfilled → no second round-trip.
+        c = _orchestrator_client()
+        c.place_order = AsyncMock(return_value={"status": "LIVE", "order_id": "o1",
+                                                "filled_size": 199.5, "avg_price": 0.50})
+        c.get_order = AsyncMock(return_value={"filled_size": 199.5, "avg_price": 0.50})
+        c.cancel_order = AsyncMock(return_value=True)
+        res = await c.place_order_with_timeout(_gtc_order(price=0.50, size_usdc=100.0))
+        assert c.place_order.await_count == 1
+        assert res["filled_size"] == pytest.approx(199.5)
