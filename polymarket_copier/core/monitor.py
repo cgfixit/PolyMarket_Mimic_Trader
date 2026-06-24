@@ -178,6 +178,8 @@ class TradeMonitor:
         self._ws_task:   Optional[asyncio.Task] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
+        # H9: heartbeat watchdog — updated after each successful poll cycle.
+        self.last_poll_completed_at: Optional[float] = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -367,6 +369,7 @@ class TradeMonitor:
             next_deadline = time.monotonic() + self._poll_interval
             while not self._stop_event.is_set():
                 await self._poll_all_wallets(session)
+                self.last_poll_completed_at = time.time()
 
                 sleep = max(0.0, next_deadline - time.monotonic())
                 next_deadline += self._poll_interval

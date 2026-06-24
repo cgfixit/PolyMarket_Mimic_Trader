@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import signal
 import sys
+import time
 from typing import Optional
 
 from polymarket_copier.api.clob_client import ClobClient
@@ -47,6 +48,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
         cooldown_after_losses=config.risk_management.cooldown_after_losses,
         cooldown_minutes=config.risk_management.cooldown_minutes,
         resolution_blackout_hours=config.risk_management.resolution_blackout_hours,
+        max_total_exposure_pct=config.risk_management.max_total_exposure_pct,
     )
     risk_manager = RiskManager(config=risk_cfg, bankroll=config.bankroll)
 
@@ -109,6 +111,41 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, handle_signal)
 
+    async def supervise(name: str, coro_factory, max_restarts: int = 10) -> None:
+        """Restart a crashed loop with exponential backoff. Gives up after max_restarts."""
+        delay = 1.0
+        restarts = 0
+        while not shutdown_event.is_set() and restarts < max_restarts:
+            try:
+                await coro_factory()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if shutdown_event.is_set():
+                    return
+                restarts += 1
+                logger.error("Loop %s crashed (restart %d/%d): %s", name, restarts, max_restarts, exc)
+                if restarts >= max_restarts:
+                    logger.critical("Loop %s exceeded max restarts — shutting down", name)
+                    shutdown_event.set()
+                    return
+                await asyncio.sleep(min(delay, 60.0))
+                delay *= 2
+
+    async def heartbeat_watchdog() -> None:
+        """Alarm if the poll loop stalls for >detection_stall_alert_seconds."""
+        stall_limit = config.detection_stall_alert_seconds or config.polling_interval_seconds * 3
+        while not shutdown_event.is_set():
+            await asyncio.sleep(stall_limit)
+            last = monitor.last_poll_completed_at
+            if last is not None and (time.time() - last) > stall_limit:
+                logger.error(
+                    "WATCHDOG: poll loop stalled for %.0fs (limit %.0fs)",
+                    time.time() - last, stall_limit,
+                )
+            elif last is None:
+                logger.warning("WATCHDOG: monitor has not completed its first poll yet")
+
     async def rebalance_loop() -> None:
         while not shutdown_event.is_set():
             await asyncio.sleep(3600)
@@ -120,6 +157,11 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
                         {t.stats.address: t.stats.win_rate for t in new_traders}
                     )
                     logger.info("Rebalanced: now tracking %d wallets", len(monitor._wallets))
+            demoted = await copier.check_trader_demotion()
+            if demoted:
+                remaining = [w for w in monitor._wallets if w not in set(demoted)]
+                monitor.set_wallets(remaining)
+                logger.info("Demoted %d traders, now tracking %d", len(demoted), len(remaining))
 
     async def exit_check_loop() -> None:
         while not shutdown_event.is_set():
@@ -133,9 +175,10 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
     logger.info("Starting bot...")
     try:
         await asyncio.gather(
-            monitor.run(),
-            rebalance_loop(),
-            exit_check_loop(),
+            supervise("monitor",       lambda: monitor.run()),
+            supervise("rebalance",     rebalance_loop),
+            supervise("exit_check",    exit_check_loop),
+            heartbeat_watchdog(),
             shutdown_watcher(),
         )
     except asyncio.CancelledError:

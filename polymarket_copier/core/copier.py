@@ -51,6 +51,8 @@ class CopyTrader:
         # `AND status='open'` guard in close_position() is the belt; this is the
         # suspenders — it stops us placing two live SELL orders for one position.
         self._exit_locks: dict[str, asyncio.Lock] = {}
+        # H13: tracks demoted traders so Kelly sizing stops using them.
+        self._demoted_traders: set[str] = set()
 
     def update_tracker_win_rates(self, rates: dict[str, float]) -> None:
         """Replace the current tracker-win-rate prior with freshly scored data.
@@ -95,7 +97,8 @@ class CopyTrader:
         # 2a. Portfolio circuit breakers (daily-loss limit, post-loss cooldown).
         #     Checked on the ENTRY path so they cannot be bypassed by opening new
         #     positions — evaluate() only governs exits of already-open positions.
-        halt_reason = self.risk.is_trading_halted()
+        unrealized = await self.portfolio.get_open_unrealized_pnl_conservative()
+        halt_reason = self.risk.is_trading_halted(unrealized_pnl=unrealized)
         if halt_reason:
             logger.warning("Skip: trading halted — %s", halt_reason)
             return
@@ -132,6 +135,17 @@ class CopyTrader:
             hours_to_resolve = (market.resolve_time.timestamp() - time.time()) / 3600
             if 0 < hours_to_resolve < blackout_hours:
                 logger.info("Skip: market resolves in %.1fh (blackout)", hours_to_resolve)
+                return
+
+        # H8: Validate the token is a recognized outcome for this market.
+        # A mislabeled Data-API row → buying the wrong side = 100% loss.
+        if market and (market.token_id_yes or market.token_id_no):
+            known = {t for t in (market.token_id_yes, market.token_id_no) if t}
+            if event.token_id not in known:
+                logger.warning(
+                    "Skip: token %s not recognized as YES/NO for market %s",
+                    event.token_id[:10], event.market_id[:10],
+                )
                 return
 
         # 4. Price deviation check. Fail CLOSED if the current price is unknown.
@@ -576,6 +590,39 @@ class CopyTrader:
             reason = self.risk.evaluate(pos, price)
             if reason != ExitReason.HOLD:
                 await self._exit_position(pos, price, reason)
+
+    async def check_trader_demotion(
+        self,
+        min_trades: int = 10,
+    ) -> list[str]:
+        """Drop tracked traders whose Wilson upper bound on copy win-rate is below
+        config min_win_rate. Returns list of demoted wallet addresses."""
+        import math
+        demoted = []
+        min_win_rate = self.config.trader_selection.min_win_rate
+        for addr in list(self._tracker_win_rates.keys()):
+            win_rate, sample = await self.portfolio.get_trader_win_rate(addr)
+            if sample < min_trades:
+                continue
+            # Wilson upper confidence bound (95% CI, z=1.645 one-sided)
+            z = 1.645
+            n = sample
+            p = win_rate
+            denom = 1 + z**2 / n
+            centre = (p + z**2 / (2*n)) / denom
+            margin = (z * math.sqrt(p*(1-p)/n + z**2/(4*n**2))) / denom
+            wilson_upper = centre + margin
+            if wilson_upper < min_win_rate:
+                demoted.append(addr)
+                self._demoted_traders.add(addr)
+                logger.warning(
+                    "Demoting trader %s: Wilson upper=%.3f < min_win_rate=%.3f (n=%d)",
+                    addr[:10], wilson_upper, min_win_rate, sample,
+                )
+        # Remove demoted traders from win-rate tracking so Kelly stops using them
+        for addr in demoted:
+            self._tracker_win_rates.pop(addr, None)
+        return demoted
 
 
 # Minimum order size ($0.01) — keeps Order model's gt=0 validation happy and
