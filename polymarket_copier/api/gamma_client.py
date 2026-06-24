@@ -39,6 +39,7 @@ class GammaClient:
         self._session_lock = asyncio.Lock()
 
     async def _get_session(self) -> aiohttp.ClientSession:
+        """Return the shared aiohttp session, lazily creating it under a lock to avoid orphaned sessions."""
         # Fast path: an open session already exists, no lock needed.
         if self._session is not None and not self._session.closed:
             return self._session
@@ -54,6 +55,7 @@ class GammaClient:
         return self._session
 
     async def close(self) -> None:
+        """Close the aiohttp session unless it was supplied externally by the caller."""
         if self._session and not self._external_session:
             await self._session.close()
 

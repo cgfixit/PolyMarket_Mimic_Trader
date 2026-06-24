@@ -10,11 +10,13 @@ import uuid
 from polymarket_copier.api.clob_client import ClobClient, InsufficientLiquidityError
 from polymarket_copier.api.gamma_client import GammaClient
 from polymarket_copier.config import AppConfig
+from polymarket_copier.core import metrics
 from polymarket_copier.core.monitor import PriceTick, TradeEvent, TradeType
 from polymarket_copier.core.portfolio import PortfolioManager
 from polymarket_copier.core.risk_manager import ExitReason, ExposureCapError, RiskManager
 from polymarket_copier.core.sizing import kelly_size_usdc
 from polymarket_copier.models.types import Order
+from polymarket_copier.utils.logger import log_event
 
 logger = logging.getLogger("polymarket_copier")
 
@@ -63,6 +65,23 @@ class CopyTrader:
         """
         self._tracker_win_rates = dict(rates)
 
+    def _record_skip(self, reason: str, event: TradeEvent, **detail) -> None:
+        """Account a skipped copy: bump the skip counter and emit a structured event.
+
+        Centralizes M16/M17 skip telemetry so every abandoned BUY is counted under a
+        stable `reason` label and surfaced as a machine-readable `copy_skipped` event,
+        without duplicating the boilerplate at each early-return site.
+        """
+        metrics.COPIES_SKIPPED.labels(reason=reason).inc()
+        log_event(
+            logger, "copy_skipped",
+            reason=reason,
+            trader=event.wallet_address,
+            market_id=event.market_id,
+            token_id=event.token_id,
+            **detail,
+        )
+
     async def handle_trade_event(self, event: TradeEvent) -> None:
         """Called by TradeMonitor on every new detected trade."""
         decision_start = time.monotonic()
@@ -78,6 +97,7 @@ class CopyTrader:
             event.size_usdc, event.price, event.market_id[:10],
             wall_age, detection_latency,
         )
+        metrics.TRADE_EVENTS.labels(trade_type=event.trade_type.value).inc()
 
         if self.config.mode == "paper":
             logger.info("[PAPER] Processing trade event %s", event.event_id)
@@ -101,6 +121,12 @@ class CopyTrader:
         halt_reason = self.risk.is_trading_halted(unrealized_pnl=unrealized)
         if halt_reason:
             logger.warning("Skip: trading halted — %s", halt_reason)
+            log_event(
+                logger, "circuit_breaker_tripped", level=logging.WARNING,
+                reason=halt_reason, unrealized_pnl=round(unrealized, 4),
+                trader=event.wallet_address, market_id=event.market_id,
+            )
+            metrics.COPIES_SKIPPED.labels(reason="trading_halted").inc()
             return
 
         # 2b. Staleness gate. After this many seconds the source's alpha has
@@ -112,9 +138,11 @@ class CopyTrader:
             # (treat as fresh), >3600 means definitely stale regardless of config.
             if wall_age > 3600:
                 logger.info("Skip: trade is %.1fs old (>1h, always stale)", wall_age)
+                self._record_skip("stale_trade", event, wall_age=round(wall_age, 1))
                 return
             if wall_age > 0 and wall_age > max_age:
                 logger.info("Skip: trade is %.1fs old > max %.1fs", wall_age, max_age)
+                self._record_skip("stale_trade", event, wall_age=round(wall_age, 1))
                 return
 
         # 3+4. Fetch market metadata and current price in parallel — both are
@@ -129,12 +157,14 @@ class CopyTrader:
         if market is None and self.config.risk_management.fail_closed_on_missing_data:
             logger.info("Skip: market data unavailable for %s (fail-closed)",
                         event.market_id[:10])
+            self._record_skip("missing_market_data", event)
             return
         if market and market.resolve_time:
             blackout_hours = self.config.risk_management.resolution_blackout_hours
             hours_to_resolve = (market.resolve_time.timestamp() - time.time()) / 3600
             if 0 < hours_to_resolve < blackout_hours:
                 logger.info("Skip: market resolves in %.1fh (blackout)", hours_to_resolve)
+                self._record_skip("resolution_blackout", event, hours_to_resolve=round(hours_to_resolve, 1))
                 return
 
         # H8: Validate the token is a recognized outcome for this market.
@@ -146,6 +176,7 @@ class CopyTrader:
                     "Skip: token %s not recognized as YES/NO for market %s",
                     event.token_id[:10], event.market_id[:10],
                 )
+                self._record_skip("unrecognized_token", event)
                 return
 
         # 4. Price deviation check. Fail CLOSED if the current price is unknown.
@@ -153,6 +184,7 @@ class CopyTrader:
             if self.config.risk_management.fail_closed_on_missing_data:
                 logger.info("Skip: current price unavailable for token %s (fail-closed)",
                             event.token_id[:10])
+                self._record_skip("missing_price", event)
                 return
             current_price = event.price
 
@@ -171,11 +203,21 @@ class CopyTrader:
                     signed_dev * 100, current_price, event.price,
                     ct.max_price_deviation * 100,
                 )
+                self._record_skip(
+                    "adverse_price_move", event,
+                    deviation_pct=round(signed_dev * 100, 2),
+                    current_price=current_price, whale_price=event.price,
+                )
                 return
             if signed_dev < -ct.max_favorable_deviation:
                 logger.info(
                     "Skip: price collapsed %.1f%% below whale entry (likely adverse news)",
                     abs(signed_dev) * 100,
+                )
+                self._record_skip(
+                    "favorable_collapse", event,
+                    deviation_pct=round(signed_dev * 100, 2),
+                    current_price=current_price, whale_price=event.price,
                 )
                 return
 
@@ -187,6 +229,7 @@ class CopyTrader:
                 "Skip: entry price %.4f outside band [%.2f, %.2f]",
                 current_price, ct.min_entry_price, ct.max_entry_price,
             )
+            self._record_skip("entry_price_band", event, current_price=current_price)
             return
 
         # 4c. H5: pre-copy edge check — skip if round-trip fees consume all upside.
@@ -199,6 +242,7 @@ class CopyTrader:
                 "Skip: post-fee edge exhausted (tp=%.4f <= adj_entry=%.4f at %.1f%% fee)",
                 tp_estimate, adj_entry, ct.round_trip_fee_pct * 100,
             )
+            self._record_skip("post_fee_edge", event, tp_estimate=round(tp_estimate, 4), adj_entry=round(adj_entry, 4))
             return
 
         # 5. Market volume check.
@@ -207,6 +251,7 @@ class CopyTrader:
                 "Skip: 24h volume $%.0f < min $%.0f",
                 market.volume_24h, self.config.copy_trading.min_market_volume,
             )
+            self._record_skip("low_volume", event, volume_24h=market.volume_24h)
             return
 
         # 6. Compute conservative copy size.
@@ -251,6 +296,7 @@ class CopyTrader:
         copy_size_usdc = min(copy_size_usdc, max_cap_usdc)
 
         if copy_size_usdc <= 0 or current_price <= 0:
+            self._record_skip("zero_size", event, copy_size_usdc=round(copy_size_usdc, 4))
             return
 
         size_shares = copy_size_usdc / max(current_price, 1e-6)
@@ -281,6 +327,7 @@ class CopyTrader:
                             "Skip: revalidation price unavailable for %s (fail-closed)",
                             event.token_id[:10],
                         )
+                        self._record_skip("missing_price", event)
                         return
                 else:
                     reval_dev = (fresh_price - current_price) / max(current_price, 1e-9)
@@ -291,6 +338,11 @@ class CopyTrader:
                             current_price, fresh_price, reval_dev * 100,
                             ct.max_price_deviation * 100,
                         )
+                        self._record_skip(
+                            "edge_collapsed_revalidation", event,
+                            current_price=current_price, fresh_price=fresh_price,
+                            deviation_pct=round(reval_dev * 100, 2),
+                        )
                         return
 
             # 7. Cheap gating checks FIRST — before registering exposure, so that a
@@ -298,6 +350,7 @@ class CopyTrader:
             count = await self.portfolio.position_count()
             if count >= self.config.copy_trading.max_concurrent_positions:
                 logger.info("Skip: max positions (%d) reached", count)
+                self._record_skip("max_positions", event, count=count)
                 return
 
             # 7a. M9: per-token position cap. Inside the entry lock (with the global
@@ -311,6 +364,7 @@ class CopyTrader:
                         "Skip: max positions per token (%d) reached on %s",
                         max_per_token, event.token_id[:10],
                     )
+                    self._record_skip("max_per_token", event, max_per_token=max_per_token)
                     return
 
             # 8. Per-trader drawdown stop.
@@ -320,6 +374,7 @@ class CopyTrader:
                     "Skip: trader %s drawdown stop (pnl=$%.2f)",
                     event.wallet_address[:10], trader_pnl,
                 )
+                self._record_skip("trader_drawdown", event, trader_pnl=round(trader_pnl, 2))
                 return
 
             # 9. build_position registers market exposure and enforces the exposure cap.
@@ -335,6 +390,7 @@ class CopyTrader:
                 )
             except ExposureCapError as e:
                 logger.info("Skip: exposure cap — %s", e)
+                self._record_skip("exposure_cap", event)
                 return
 
             order = Order(
@@ -358,12 +414,16 @@ class CopyTrader:
                 await self.risk.release_exposure(
                     pos.market_id, pos.entry_price * pos.size_shares, pos.trader_address
                 )
+                metrics.EXPOSURE_RELEASED.labels(cause="insufficient_liquidity").inc()
+                self._record_skip("insufficient_liquidity", event)
                 return
             except Exception as e:
                 logger.error("Order placement failed: %s", e)
                 await self.risk.release_exposure(
                     pos.market_id, pos.entry_price * pos.size_shares, pos.trader_address
                 )
+                metrics.EXPOSURE_RELEASED.labels(cause="order_failed").inc()
+                self._record_skip("order_failed", event)
                 return
 
             # 10a. Reconcile against the ACTUAL fill. In live trading an order can
@@ -390,10 +450,12 @@ class CopyTrader:
                 await self.risk.release_exposure(
                     pos.market_id, registered_notional, pos.trader_address
                 )
+                metrics.EXPOSURE_RELEASED.labels(cause="no_fill").inc()
                 logger.info(
                     "Skip: order did not fill (0 shares) — released $%.2f exposure on %s",
                     registered_notional, event.market_id[:10],
                 )
+                self._record_skip("no_fill", event, registered_notional=round(registered_notional, 2))
                 return
 
             if filled_shares < size_shares:
@@ -407,6 +469,7 @@ class CopyTrader:
                 await self.risk.release_exposure(
                     pos.market_id, release_value, pos.trader_address
                 )
+                metrics.EXPOSURE_RELEASED.labels(cause="partial_fill_remainder").inc()
                 pos.size_shares = filled_shares
                 logger.info(
                     "Partial fill: %.2f/%.2f shares — released $%.2f unfilled exposure on %s",
@@ -433,6 +496,7 @@ class CopyTrader:
             )
 
             await self.portfolio.open_position(pos)
+            metrics.POSITIONS_OPENED.inc()
 
         if self.monitor:
             self.monitor.subscribe_token(event.token_id)
@@ -441,6 +505,22 @@ class CopyTrader:
             "Copied: %s $%.2f @ %.4f (fill %.4f) | TP=%.4f SL=%.4f | from %s",
             event.trade_type.value, copy_size_usdc, current_price, fill_price,
             pos.tp_price, pos.sl_price, event.wallet_address[:10],
+        )
+        log_event(
+            logger, "position_opened",
+            position_id=pos.position_id,
+            trader=event.wallet_address,
+            market_id=event.market_id,
+            token_id=event.token_id,
+            side="BUY",
+            size_usdc=round(copy_size_usdc, 4),
+            quoted_price=current_price,
+            fill_price=fill_price,
+            size_shares=round(pos.size_shares, 4),
+            tp_price=pos.tp_price,
+            sl_price=pos.sl_price,
+            mode=self.config.mode,
+            event_id=event.event_id,
         )
 
     @staticmethod
@@ -518,6 +598,7 @@ class CopyTrader:
                 await self._exit_position(pos, tick.price, reason)
 
     async def _exit_position(self, pos, price: float, reason: ExitReason) -> None:
+        """Acquire the per-position lock and close the position, skipping if an exit is already in progress."""
         # C4: per-position lock prevents two concurrent exit triggers (WS tick vs
         # poll sweep vs SOURCE_EXIT) from both placing a SELL and recording the lot.
         lock = self._exit_locks.setdefault(pos.position_id, asyncio.Lock())
@@ -532,6 +613,7 @@ class CopyTrader:
         self._exit_locks.pop(pos.position_id, None)
 
     async def _exit_position_locked(self, pos, price: float, reason: ExitReason) -> None:
+        """Place a SELL order with retry/backoff and close the DB record only after a confirmed fill."""
         exit_shares = pos.size_shares
         exit_order = Order(
             market_id=pos.market_id,
@@ -593,6 +675,13 @@ class CopyTrader:
         if pnl == 0.0 and reason != ExitReason.HOLD:
             # close_position returned 0.0 due to the DB race guard (position was
             # already closed by a concurrent exit path). Do not double-call record_exit.
+            # KNOWN LIMITATION (pre-existing): a genuine break-even close where
+            # exit_price == entry_price exactly also yields pnl==0.0 and takes this
+            # branch, so it skips record_exit + the exit metrics. Rare (exact float
+            # equality on a [0,1] price). The clean fix is to have close_position
+            # signal "already closed" distinctly (Optional[float]/None) rather than
+            # overloading 0.0 — tracked as a follow-up; out of scope for this
+            # observability change to avoid altering close_position's contract.
             logger.warning(
                 "close_position returned 0.0 for %s — skipping record_exit (already closed)",
                 pos.position_id,
@@ -603,9 +692,28 @@ class CopyTrader:
         if self.monitor:
             self.monitor.unsubscribe_token(pos.token_id)
 
+        # M16: count the exit and record its PnL distribution AFTER the race-guard
+        # return above, so a double-trigger (WS tick vs poll sweep vs SOURCE_EXIT)
+        # can never double-count a single close.
+        metrics.EXITS.labels(reason=reason.name).inc()
+        metrics.EXIT_PNL.labels(reason=reason.name).observe(pnl)
+
         logger.info(
             "Exited [%s]: %s pnl=$%.4f @ %.4f (filled=%.2f/%0.2f shares)",
             reason.name, pos.position_id, pnl, avg_fill_price, filled_shares, exit_shares,
+        )
+        log_event(
+            logger, "position_closed",
+            position_id=pos.position_id,
+            reason=reason.name,
+            pnl=round(pnl, 4),
+            exit_price=avg_fill_price,
+            entry_price=pos.entry_price,
+            filled_shares=round(filled_shares, 4),
+            requested_shares=round(exit_shares, 4),
+            trader=pos.trader_address,
+            market_id=pos.market_id,
+            token_id=pos.token_id,
         )
 
     async def _handle_source_exit(self, event: TradeEvent) -> None:
@@ -691,9 +799,17 @@ class CopyTrader:
                     "Demoting trader %s: Wilson upper=%.3f < min_win_rate=%.3f (n=%d)",
                     addr[:10], wilson_upper, min_win_rate, sample,
                 )
+                log_event(
+                    logger, "trader_demoted", level=logging.WARNING,
+                    trader=addr, wilson_upper=round(wilson_upper, 4),
+                    min_win_rate=min_win_rate, observed_win_rate=round(win_rate, 4),
+                    sample=sample, reason="wilson_below_min_win_rate",
+                )
         # Remove demoted traders from win-rate tracking so Kelly stops using them
         for addr in demoted:
             self._tracker_win_rates.pop(addr, None)
+        if demoted:
+            metrics.TRADERS_DEMOTED.inc(len(demoted))
         return demoted
 
 

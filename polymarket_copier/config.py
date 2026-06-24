@@ -158,6 +158,13 @@ class AppConfig(BaseModel):
     # whale's trade and front-run our copy. 0 disables (fixed periodic polling).
     poll_jitter_seconds: float = 2.0
     max_tracked_traders: int = 5
+    # M16: Prometheus metrics. When enabled (and prometheus_client is installed) a
+    # scrape endpoint is exposed on metrics_port and gauges are refreshed every
+    # metrics_refresh_seconds. Off by default — opt-in observability, no-op if the
+    # optional dependency is absent.
+    metrics_enabled: bool = False
+    metrics_port: int = 9090
+    metrics_refresh_seconds: float = 5.0
 
     trader_selection: TraderSelectionConfig = Field(default_factory=TraderSelectionConfig)
     copy_trading: CopyTradingConfig = Field(default_factory=CopyTradingConfig)

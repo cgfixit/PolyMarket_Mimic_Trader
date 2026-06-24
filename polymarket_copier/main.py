@@ -12,12 +12,23 @@ from typing import Optional
 from polymarket_copier.api.clob_client import ClobClient
 from polymarket_copier.api.gamma_client import GammaClient
 from polymarket_copier.config import ConfigError, load_config
+from polymarket_copier.core import metrics
 from polymarket_copier.core.copier import CopyTrader
 from polymarket_copier.core.monitor import TradeMonitor
 from polymarket_copier.core.portfolio import PortfolioManager
 from polymarket_copier.core.risk_manager import RiskConfig, RiskManager
 from polymarket_copier.core.tracker import TrackerClient, TrackerConfig
 from polymarket_copier.utils.logger import setup_logger
+
+
+def _update_tracker_metrics(tracker: TrackerClient) -> None:
+    """Refresh the per-tracker Prometheus gauges after a leaderboard refresh."""
+    metrics.TRACKED_TRADERS.set(len(tracker.top_traders))
+    metrics.LAST_TRACKER_REFRESH.set(tracker.last_refresh())
+    for t in tracker.top_traders:
+        metrics.TRADER_SCORE.labels(
+            trader_address=t.stats.address, rank=str(t.rank)
+        ).set(t.score)
 
 
 async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None) -> None:
@@ -32,6 +43,11 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
         "Mode: %s | Bankroll: $%.2f | Max traders: %d",
         config.mode.upper(), config.bankroll, config.max_tracked_traders,
     )
+
+    # M16: optionally expose Prometheus metrics. No-op if prometheus_client is not
+    # installed (start_metrics_server logs a warning and returns False).
+    if config.metrics_enabled:
+        metrics.start_metrics_server(config.metrics_port)
 
     risk_cfg = RiskConfig(
         tp_range_fraction=config.risk_management.tp_range_fraction,
@@ -84,6 +100,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
     )
     tracker = TrackerClient(config=tracker_cfg)
     top_traders = await tracker.refresh()
+    _update_tracker_metrics(tracker)
 
     if not top_traders:
         logger.error("No suitable traders found. Check trader_selection thresholds.")
@@ -164,12 +181,33 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
                     copier.update_tracker_win_rates(
                         {t.stats.address: t.stats.win_rate for t in new_traders}
                     )
+                    _update_tracker_metrics(tracker)
                     logger.info("Rebalanced: now tracking %d wallets", len(monitor._wallets))
             demoted = await copier.check_trader_demotion()
             if demoted:
                 remaining = [w for w in monitor._wallets if w not in set(demoted)]
                 monitor.set_wallets(remaining)
                 logger.info("Demoted %d traders, now tracking %d", len(demoted), len(remaining))
+
+    async def metrics_loop() -> None:
+        # M16: refresh the periodically-sampled gauges. Counters/histograms are
+        # incremented inline at their event sites; only the point-in-time gauges
+        # need this collector. Cheap no-ops when prometheus_client is absent, so
+        # the loop runs harmlessly regardless of whether metrics are enabled.
+        interval = config.metrics_refresh_seconds
+        while not shutdown_event.is_set():
+            unrealized = await portfolio.get_open_unrealized_pnl_conservative()
+            metrics.BANKROLL.set(risk_manager.bankroll)
+            metrics.DAILY_PNL.set(risk_manager.daily_pnl())
+            metrics.OPEN_POSITIONS.set(await portfolio.position_count())
+            metrics.OPEN_UNREALIZED_PNL.set(unrealized)
+            metrics.TOTAL_EXPOSURE.set(risk_manager.total_exposure())
+            metrics.CONSECUTIVE_LOSSES.set(risk_manager.consecutive_losses())
+            metrics.COOLDOWN_SECONDS_REMAINING.set(risk_manager.cooldown_remaining())
+            metrics.TRADING_HALTED.set(
+                1 if risk_manager.is_trading_halted(unrealized_pnl=unrealized) else 0
+            )
+            await asyncio.sleep(interval)
 
     async def exit_check_loop() -> None:
         # H10: tighten exit poll cadence when WS is down so TP/SL latency stays low
@@ -193,6 +231,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
             supervise("monitor",       lambda: monitor.run()),
             supervise("rebalance",     rebalance_loop),
             supervise("exit_check",    exit_check_loop),
+            supervise("metrics",       metrics_loop),
             heartbeat_watchdog(),
             shutdown_watcher(),
         )

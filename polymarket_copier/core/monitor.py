@@ -69,6 +69,7 @@ _MIN_POLL_FLOOR      = 1.0    # H17: never let jitter drive the cycle below this
 # ─── Data Models ──────────────────────────────────────────────────────────────
 
 class TradeType(Enum):
+    """Enumeration of tracked-wallet trade actions (BUY, SELL, SIZE_UP, SIZE_DOWN)."""
     BUY         = "BUY"    # New long position opened
     SELL        = "SELL"   # Position partially or fully exited
     SIZE_UP     = "SIZE_UP"

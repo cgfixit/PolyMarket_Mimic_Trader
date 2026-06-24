@@ -1,6 +1,9 @@
 mode: paper
 polling_interval_seconds: 8
 poll_jitter_seconds: 2.0          # H17: randomize poll cadence (front-run resistance; 0 disables)
+metrics_enabled: false            # M16: expose Prometheus metrics (no-op if prometheus-client absent)
+metrics_port: 9090                # M16: scrape endpoint port
+metrics_refresh_seconds: 5.0      # M16: gauge refresh interval
 
 trader_selection:
   min_pnl: 10000

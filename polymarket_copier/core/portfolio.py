@@ -70,6 +70,7 @@ class PortfolioManager:
         self._db: Optional[aiosqlite.Connection] = None
 
     async def init(self) -> None:
+        """Open the SQLite connection, enable WAL mode, and create the schema if absent."""
         os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL;")
@@ -78,6 +79,7 @@ class PortfolioManager:
         logger.info("Portfolio DB initialized: %s", self._db_path)
 
     async def close(self) -> None:
+        """Close the underlying SQLite connection if it is open."""
         if self._db:
             await self._db.close()
 
@@ -96,6 +98,7 @@ class PortfolioManager:
         return self._db
 
     async def open_position(self, pos: Position) -> None:
+        """Insert a new open position row into the positions table and commit."""
         db = self._require_db()
         await db.execute(
             """INSERT INTO positions
@@ -112,6 +115,7 @@ class PortfolioManager:
     async def close_position(
         self, position_id: str, exit_price: float, reason: ExitReason,
     ) -> float:
+        """Mark a position closed (guarded against double-close), record a tax lot, and return realized PnL."""
         db = self._require_db()
         pos = await self.get_position(position_id)
         if pos is None:
@@ -191,12 +195,14 @@ class PortfolioManager:
         }
 
     async def get_open_positions(self) -> List[Position]:
+        """Return all positions whose status is 'open'."""
         db = self._require_db()
         cursor = await db.execute("SELECT * FROM positions WHERE status='open'")
         rows = await cursor.fetchall()
         return [_row_to_position(row) for row in rows]
 
     async def get_position(self, position_id: str) -> Optional[Position]:
+        """Return the position with the given id, or None if not found."""
         db = self._require_db()
         cursor = await db.execute(
             "SELECT * FROM positions WHERE position_id=?", (position_id,)
@@ -207,6 +213,7 @@ class PortfolioManager:
         return _row_to_position(row)
 
     async def get_position_by_token(self, token_id: str) -> Optional[Position]:
+        """Return a single open position for the given token id, or None if none exists."""
         db = self._require_db()
         cursor = await db.execute(
             "SELECT * FROM positions WHERE token_id=? AND status='open'", (token_id,)
@@ -233,6 +240,7 @@ class PortfolioManager:
         return [_row_to_position(row) for row in rows]
 
     async def position_count(self) -> int:
+        """Return the number of currently open positions."""
         db = self._require_db()
         cursor = await db.execute(
             "SELECT COUNT(*) FROM positions WHERE status='open'"
@@ -241,6 +249,7 @@ class PortfolioManager:
         return row[0] if row else 0
 
     async def update_peak_price(self, position_id: str, peak_price: float) -> None:
+        """Update the stored peak_price for a position (used for trailing-stop tracking)."""
         db = self._require_db()
         await db.execute(
             "UPDATE positions SET peak_price=? WHERE position_id=?",
@@ -256,6 +265,7 @@ class PortfolioManager:
         return sum(pos.pnl_at(pos.sl_price) for pos in positions)
 
     async def get_trader_pnl(self, trader_address: str) -> float:
+        """Return the summed realized PnL of all closed positions copied from a trader."""
         db = self._require_db()
         cursor = await db.execute(
             "SELECT COALESCE(SUM(realized_pnl), 0) FROM positions "
@@ -287,6 +297,7 @@ class PortfolioManager:
         return wins / total, total
 
     async def summary(self) -> str:
+        """Return a formatted text summary of open count, closed trades, win rate, and realized PnL."""
         db = self._require_db()
         open_count = await self.position_count()
         cursor = await db.execute(
