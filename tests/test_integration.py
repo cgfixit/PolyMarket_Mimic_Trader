@@ -244,7 +244,7 @@ class TestWSDeathAndRecovery:
             try:
                 await asyncio.wait_for(monitor._poll_loop(), timeout=2.0)
             except asyncio.TimeoutError:
-                pass
+                pass  # normal — loop stopped via _stop_event before timeout fired
 
         assert monitor.last_poll_completed_at is not None, (
             "last_poll_completed_at must be set after each _poll_loop cycle "
@@ -324,7 +324,7 @@ class TestWSDeathAndRecovery:
             try:
                 await asyncio.wait_for(monitor._ws_loop(), timeout=2.0)
             except asyncio.TimeoutError:
-                pass
+                pass  # normal — loop exited via _stop_event set inside _clean_connect
 
         assert monitor._ws_retry_count == 0, "Retry counter should reset after a clean listen"
 

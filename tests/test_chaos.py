@@ -18,7 +18,7 @@ import json
 import logging
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from polymarket_copier.api.clob_client import ClobClient
 from polymarket_copier.config import AppConfig
