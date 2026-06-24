@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -10,6 +11,7 @@ from polymarket_copier.core.tracker import (
     ScoredTrader,
     TraderScorer,
     TraderStats,
+    TrackerClient,
     TrackerConfig,
     _compute_trader_stats,
     _parse_timestamp,
@@ -315,3 +317,90 @@ class TestParseTimestamp:
         result = _parse_timestamp(None)
         after = time.time()
         assert before <= result <= after
+
+
+class TestRefreshPipeline:
+    """Exercises TrackerClient.refresh() end-to-end with the network I/O stubbed,
+    covering the H15 dual-window intersection and the ranking/caching steps."""
+
+    @pytest.mark.asyncio
+    async def test_refresh_returns_ranked_traders_from_dual_windows(self):
+        client = TrackerClient(config=TrackerConfig(max_top_traders=5))
+        all_window = [
+            {"name": "0xA", "pnl": 50000, "pseudonym": "A"},
+            {"name": "0xB", "pnl": 40000, "pseudonym": "B"},
+        ]
+        recent_window = [{"name": "0xA", "pnl": 30000}]  # only 0xA in BOTH windows
+        with patch.object(
+            client, "_fetch_dual_leaderboards",
+            new=AsyncMock(return_value=(all_window, recent_window)),
+        ), patch.object(
+            client, "_build_trader_stats",
+            new=AsyncMock(side_effect=lambda session, entry: make_stats(
+                pnl_list=[10.0, 12.0, 11.0, 13.0]
+            )),
+        ):
+            result = await client.refresh()
+        # 0xB filtered out (not in recent window); 0xA survives and is ranked.
+        assert len(result) == 1
+        assert result[0].rank == 1
+        assert client.top_traders == result
+        assert client.last_refresh() > 0
+
+    @pytest.mark.asyncio
+    async def test_refresh_empty_when_a_window_is_empty(self):
+        client = TrackerClient()
+        with patch.object(
+            client, "_fetch_dual_leaderboards",
+            new=AsyncMock(return_value=([], [{"name": "0xA"}])),
+        ):
+            assert await client.refresh() == []
+
+    @pytest.mark.asyncio
+    async def test_refresh_empty_when_no_window_overlap(self):
+        client = TrackerClient()
+        with patch.object(
+            client, "_fetch_dual_leaderboards",
+            new=AsyncMock(return_value=(
+                [{"name": "0xA", "pnl": 50000}], [{"name": "0xZ", "pnl": 50000}],
+            )),
+        ):
+            # Disjoint windows → no candidates survive the intersection.
+            assert await client.refresh() == []
+
+    @pytest.mark.asyncio
+    async def test_refresh_skips_failed_stats_fetches(self):
+        client = TrackerClient(config=TrackerConfig(max_top_traders=5))
+        all_window = [
+            {"name": "0xA", "pnl": 50000, "pseudonym": "A"},
+            {"name": "0xB", "pnl": 40000, "pseudonym": "B"},
+        ]
+        recent_window = [{"name": "0xA"}, {"name": "0xB"}]
+
+        async def stats_or_fail(session, entry):
+            if entry["name"] == "0xB":
+                raise RuntimeError("activity fetch failed")
+            return make_stats(pnl_list=[10.0, 12.0, 11.0, 13.0])
+
+        with patch.object(
+            client, "_fetch_dual_leaderboards",
+            new=AsyncMock(return_value=(all_window, recent_window)),
+        ), patch.object(
+            client, "_build_trader_stats", new=AsyncMock(side_effect=stats_or_fail),
+        ):
+            result = await client.refresh()
+        # 0xB's exception is swallowed (gather return_exceptions); 0xA still ranked.
+        assert len(result) == 1
+
+
+class TestTrackerAccessors:
+    def test_top_wallet_addresses_empty_before_refresh(self):
+        client = TrackerClient()
+        assert client.top_wallet_addresses() == []
+
+    def test_last_refresh_zero_before_refresh(self):
+        assert TrackerClient().last_refresh() == 0.0
+
+    def test_needs_rebalance_true_when_never_refreshed(self):
+        # _last_refresh defaults to 0.0, so the elapsed interval is enormous.
+        assert TrackerClient().needs_rebalance is True

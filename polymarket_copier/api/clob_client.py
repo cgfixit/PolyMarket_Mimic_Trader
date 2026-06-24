@@ -61,6 +61,7 @@ class ClobClient:
             self._executor.shutdown(wait=False)
 
     def _init_live_client(self) -> None:
+        """Lazily construct and authenticate the live py-clob-client (thread-safe, single-init)."""
         with self._init_lock:
             if self._client is not None:
                 return
@@ -92,6 +93,7 @@ class ClobClient:
                 ) from None
 
     async def get_order_book(self, token_id: str) -> dict[str, Any]:
+        """Return the order book for a token (a synthetic book in paper mode)."""
         if self.paper_mode:
             return {
                 "bids": [{"price": "0.50", "size": "10000"}],
@@ -213,6 +215,7 @@ class ClobClient:
         return {"status": "LIVE", "result": signed_order}
 
     async def cancel_order(self, order_id: str) -> bool:
+        """Cancel an order by id, returning True on success (always True in paper mode)."""
         if self.paper_mode:
             logger.info("[PAPER] Cancel: %s", order_id)
             return True
@@ -229,6 +232,7 @@ class ClobClient:
             return False
 
     async def get_balance(self) -> Optional[float]:
+        """Return the available USDC balance (configured bankroll in paper mode, None on error)."""
         if self.paper_mode:
             return self.config.bankroll
         def _balance_sync() -> float:

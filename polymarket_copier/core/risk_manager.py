@@ -57,6 +57,7 @@ def _to_dec(x: float) -> Decimal:
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
 class ExitReason(Enum):
+    """Enumeration of reasons a position is exited (or held) on evaluation."""
     HOLD              = auto()
     TAKE_PROFIT       = auto()
     STOP_LOSS         = auto()
@@ -69,6 +70,7 @@ class ExitReason(Enum):
 
 
 class Side(Enum):
+    """Order side enumeration (BUY or SELL)."""
     BUY  = "BUY"
     SELL = "SELL"
 
@@ -533,7 +535,20 @@ class RiskManager:
         return self.bankroll * self.cfg.max_trader_allocation
 
     def daily_pnl(self) -> float:
+        """Return the realized PnL accumulated in the current UTC daily-loss window."""
         return float(self._daily_pnl)
+
+    def total_exposure(self) -> float:
+        """Total $ deployed across all open markets (basis for the total-exposure cap)."""
+        return float(sum(self._market_exposure.values(), _ZERO))
+
+    def consecutive_losses(self) -> int:
+        """Current consecutive-loss streak; resets to 0 on any win or when a cooldown engages."""
+        return self._consecutive_losses
+
+    def cooldown_remaining(self) -> float:
+        """Seconds remaining on the active post-loss cooldown; 0.0 when not in cooldown."""
+        return max(0.0, self._cooldown_until - time.time())
 
     # ── Internal threshold computation ────────────────────────────────────────
 
@@ -620,6 +635,7 @@ class RiskManager:
         return max(trail_sl, pos.sl_price)
 
     def _assert_exposure_cap(self, market_id: str, new_value: float) -> None:
+        """Raise ExposureCapError if adding new_value would breach the per-market exposure cap."""
         cap     = self.market_exposure_cap()
         current = float(self._market_exposure.get(market_id, _ZERO))
         if current + new_value > cap:
@@ -630,8 +646,9 @@ class RiskManager:
             )
 
     def _assert_total_exposure(self, new_value: float) -> None:
+        """Raise ExposureCapError if adding new_value would breach the total bankroll exposure cap."""
         cap = self.bankroll * self.cfg.max_total_exposure_pct
-        total = float(sum(self._market_exposure.values(), _ZERO)) + new_value
+        total = self.total_exposure() + new_value
         if total > cap:
             raise ExposureCapError(
                 f"Total exposure ${total:.2f} would exceed "
@@ -640,6 +657,7 @@ class RiskManager:
             )
 
     def _assert_trader_allocation(self, trader_address: str, new_value: float) -> None:
+        """Raise ExposureCapError if adding new_value would breach the per-trader allocation cap."""
         cap     = self.trader_allocation_cap()
         current = float(self._trader_exposure.get(trader_address, _ZERO))
         if current + new_value > cap:
@@ -650,6 +668,7 @@ class RiskManager:
             )
 
     def _maybe_reset_daily_window(self) -> None:
+        """Reset daily PnL and the window start timestamp when the UTC calendar day has rolled over."""
         now_utc   = datetime.fromtimestamp(time.time(), tz=timezone.utc)
         start_utc = datetime.fromtimestamp(self._day_start_ts, tz=timezone.utc)
         if now_utc.date() != start_utc.date():

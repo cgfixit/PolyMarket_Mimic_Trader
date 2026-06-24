@@ -204,6 +204,7 @@ class TraderScorer:
         return top
 
     def _is_eligible(self, stats: TraderStats) -> bool:
+        """Return True if the trader passes the min PnL, trade-count, and expectancy thresholds."""
         reasons = []
         if stats.total_pnl < self.cfg.min_total_pnl:
             reasons.append(f"total_pnl={stats.total_pnl:.0f} < {self.cfg.min_total_pnl:.0f}")
@@ -348,11 +349,17 @@ class TrackerClient:
 
     @property
     def needs_rebalance(self) -> bool:
+        """Whether the rebalance interval has elapsed since the last refresh()."""
         elapsed_days = (time.time() - self._last_refresh) / 86_400.0
         return elapsed_days >= self.cfg.rebalance_interval_days
 
     def top_wallet_addresses(self) -> List[str]:
+        """Return the wallet addresses of the currently ranked top traders."""
         return [t.stats.address for t in self.top_traders]
+
+    def last_refresh(self) -> float:
+        """Unix timestamp of the last successful refresh() (0.0 if never run)."""
+        return self._last_refresh
 
     # ── Private: API Fetchers ─────────────────────────────────────────────────
 
@@ -390,15 +397,6 @@ class TrackerClient:
         except Exception as exc:
             logger.warning("Leaderboard fetch (window=%s) failed: %s", window, exc)
             return []
-
-    async def _fetch_leaderboard(
-        self, session: aiohttp.ClientSession
-    ) -> List[dict]:
-        """
-        Deprecated: use _fetch_dual_leaderboards instead.
-        Kept for backwards compatibility; fetches all-time window only.
-        """
-        return await self._fetch_leaderboard_window(session, "all")
 
     async def _build_trader_stats(
         self,

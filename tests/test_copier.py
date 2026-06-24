@@ -750,3 +750,178 @@ class TestEntryTocTouLock:
         await copier.handle_trade_event(buy_event(market="mkt-c", token="tok-c"))
         count = await copier.portfolio.position_count()
         assert count == 2, "Should be capped at 2 even with serial calls"
+
+
+class TestStructuredEvents:
+    """M16/M17: lifecycle events emit machine-readable structured records through
+    the logging 'data' channel, and the skip counter is exercised on every skip."""
+
+    @staticmethod
+    def _capture_events():
+        """Attach a capturing handler to the copier logger and lower its level so
+        INFO-level structured events are not filtered (setup_logger is not called in
+        tests, so the logger's effective level would otherwise be WARNING). Returns
+        (records, cleanup) where cleanup() detaches the handler and restores level."""
+        import logging
+        records = []
+
+        class _Cap(logging.Handler):
+            def emit(self, record):
+                if hasattr(record, "data"):
+                    records.append(record.data)
+
+        lg = logging.getLogger("polymarket_copier")
+        prev_level = lg.level
+        lg.setLevel(logging.DEBUG)
+        handler = _Cap()
+        lg.addHandler(handler)
+
+        def cleanup():
+            lg.removeHandler(handler)
+            lg.setLevel(prev_level)
+
+        return records, cleanup
+
+    @pytest.mark.asyncio
+    async def test_position_opened_event_emitted(self, copier):
+        records, cleanup = self._capture_events()
+        try:
+            await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        finally:
+            cleanup()
+        opened = [r for r in records if r.get("event") == "position_opened"]
+        assert len(opened) == 1
+        ev = opened[0]
+        assert ev["side"] == "BUY"
+        assert ev["token_id"] == "tok-a"
+        assert ev["trader"] == "0xwhale"
+        assert ev["mode"] == "paper"
+        assert "tp_price" in ev and "sl_price" in ev
+
+    @pytest.mark.asyncio
+    async def test_copy_skipped_event_carries_reason(self, copier, gamma):
+        # Force a low-volume skip and assert the structured copy_skipped event fires.
+        gamma.get_market = AsyncMock(return_value=Market(
+            condition_id="mkt-a", volume_24h=100, active=True, resolve_time=None,
+        ))
+        records, cleanup = self._capture_events()
+        try:
+            await copier.handle_trade_event(buy_event())
+        finally:
+            cleanup()
+        skips = [r for r in records if r.get("event") == "copy_skipped"]
+        assert skips and skips[0]["reason"] == "low_volume"
+        assert skips[0]["trader"] == "0xwhale"
+
+    @pytest.mark.asyncio
+    async def test_position_closed_event_emitted_on_exit(self, copier):
+        from polymarket_copier.core.monitor import PriceTick
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        records, cleanup = self._capture_events()
+        try:
+            # Jump to TP (0.70 for entry 0.50) → exit fires.
+            await copier.handle_price_tick(PriceTick(token_id="tok-a", price=0.72))
+        finally:
+            cleanup()
+        closed = [r for r in records if r.get("event") == "position_closed"]
+        assert len(closed) == 1
+        assert closed[0]["reason"] == "TAKE_PROFIT"
+        assert "pnl" in closed[0]
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_event_emitted_when_halted(self, copier):
+        # Drive daily PnL below the loss limit so the entry path halts.
+        from decimal import Decimal
+        copier.risk._daily_pnl = Decimal(
+            str(-(copier.risk.bankroll * copier.risk.cfg.daily_loss_limit_pct) - 1.0)
+        )
+        records, cleanup = self._capture_events()
+        try:
+            await copier.handle_trade_event(buy_event())
+        finally:
+            cleanup()
+        cb = [r for r in records if r.get("event") == "circuit_breaker_tripped"]
+        assert cb, "expected a circuit_breaker_tripped event"
+        assert await copier.portfolio.position_count() == 0
+
+
+class TestSkipReasons:
+    """M16/M17: each early-return abandons the copy with a stable skip reason.
+    Capturing the structured copy_skipped events validates the reason codes and
+    covers the instrumented skip branches."""
+
+    @staticmethod
+    def _skips(records):
+        return [r for r in records if r.get("event") == "copy_skipped"]
+
+    @staticmethod
+    def _capture():
+        import logging
+        records = []
+
+        class _Cap(logging.Handler):
+            def emit(self, record):
+                if hasattr(record, "data"):
+                    records.append(record.data)
+
+        lg = logging.getLogger("polymarket_copier")
+        prev = lg.level
+        lg.setLevel(logging.DEBUG)
+        h = _Cap()
+        lg.addHandler(h)
+        return records, lambda: (lg.removeHandler(h), lg.setLevel(prev))
+
+    @pytest.mark.asyncio
+    async def test_adverse_price_move_reason(self, copier, gamma):
+        gamma.get_market_price = AsyncMock(return_value=0.60)  # +20% vs whale 0.50
+        records, cleanup = self._capture()
+        try:
+            await copier.handle_trade_event(buy_event(price=0.50))
+        finally:
+            cleanup()
+        assert any(s["reason"] == "adverse_price_move" for s in self._skips(records))
+
+    @pytest.mark.asyncio
+    async def test_entry_price_band_reason(self, copier, gamma):
+        # Price at 0.99 is outside the default [0.05, 0.95] band; keep it within
+        # max_price_deviation of the whale entry so the band gate is what fires.
+        gamma.get_market_price = AsyncMock(return_value=0.99)
+        records, cleanup = self._capture()
+        try:
+            await copier.handle_trade_event(buy_event(price=0.99))
+        finally:
+            cleanup()
+        assert any(s["reason"] == "entry_price_band" for s in self._skips(records))
+
+    @pytest.mark.asyncio
+    async def test_stale_trade_reason(self, copier):
+        copier.config.copy_trading.max_trade_age_seconds = 5.0
+        stale = buy_event()
+        object.__setattr__(stale, "timestamp", time.time() - 60)  # 60s old > 5s max
+        records, cleanup = self._capture()
+        try:
+            await copier.handle_trade_event(stale)
+        finally:
+            cleanup()
+        assert any(s["reason"] == "stale_trade" for s in self._skips(records))
+
+    @pytest.mark.asyncio
+    async def test_exposure_cap_reason(self, copier):
+        # Tiny per-market cap so the first copy's reservation breaches it.
+        copier.risk.cfg.max_market_exposure_pct = 0.0001  # ~$1 cap on $10k bankroll
+        records, cleanup = self._capture()
+        try:
+            await copier.handle_trade_event(buy_event(price=0.50, size=100.0))
+        finally:
+            cleanup()
+        assert any(s["reason"] == "exposure_cap" for s in self._skips(records))
+
+    @pytest.mark.asyncio
+    async def test_missing_market_data_reason(self, copier, gamma):
+        gamma.get_market = AsyncMock(return_value=None)
+        records, cleanup = self._capture()
+        try:
+            await copier.handle_trade_event(buy_event())
+        finally:
+            cleanup()
+        assert any(s["reason"] == "missing_market_data" for s in self._skips(records))
