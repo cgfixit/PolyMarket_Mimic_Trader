@@ -13,7 +13,7 @@ from polymarket_copier.config import AppConfig
 from polymarket_copier.core import metrics
 from polymarket_copier.core.monitor import PriceTick, TradeEvent, TradeType
 from polymarket_copier.core.portfolio import PortfolioManager
-from polymarket_copier.core.risk_manager import ExitReason, ExposureCapError, RiskManager
+from polymarket_copier.core.risk_manager import ExitReason, ExposureCapError, Position, RiskManager
 from polymarket_copier.core.sizing import kelly_size_from_edge, kelly_size_usdc, roi_to_edge
 from polymarket_copier.models.types import Order
 from polymarket_copier.utils.logger import log_event
@@ -60,6 +60,23 @@ class CopyTrader:
         self._exit_locks: dict[str, asyncio.Lock] = {}
         # H13: tracks demoted traders so Kelly sizing stops using them.
         self._demoted_traders: set[str] = set()
+        # H11: in-memory position cache keyed by token_id.  Avoids per-tick SQLite
+        # reads on the TP/SL evaluation hot path.  Rehydrated at startup via
+        # rehydrate_position_cache(); mutated on open/close.
+        self._pos_cache: dict[str, list[Position]] = {}
+        # Pending peak_price updates — written to in-memory Position objects
+        # immediately on each WS tick; flushed to SQLite in a debounced batch so
+        # the hot path writes zero bytes to disk per tick (H11).
+        self._peak_dirty: dict[str, float] = {}
+        self._last_peak_flush: float = 0.0
+        # How often (seconds) to flush dirty peak prices to the DB.  At close the
+        # final peak is always persisted regardless of this interval.
+        self._peak_persist_interval: float = 30.0
+        # H12: count of entries that have reserved exposure (build_position succeeded)
+        # but whose position row is not yet committed to the DB (open_position pending).
+        # Added to position_count() inside the entry lock so the TOCTOU cap holds even
+        # while the lock is not held during the order placement I/O.
+        self._pending_entries: int = 0
 
     def update_tracker_win_rates(self, rates: dict[str, float]) -> None:
         """Replace the current tracker-win-rate prior with freshly scored data.
@@ -80,6 +97,43 @@ class CopyTrader:
         """
         self._tracker_mean_pnl = dict(rois)
         self._tracker_updated_at = time.time()  # M4: stamp for prior-decay
+
+    async def rehydrate_position_cache(self) -> None:
+        """Load all open DB positions into the in-memory cache (H11).
+
+        Must be called once at startup after portfolio.init(), before monitor.run().
+        On a clean first start this is a no-op.  On restart it restores the
+        position set so handle_price_tick() has a warm cache immediately.
+        """
+        open_positions = await self.portfolio.get_open_positions()
+        self._pos_cache.clear()
+        for p in open_positions:
+            self._pos_cache.setdefault(p.token_id, []).append(p)
+        logger.info(
+            "H11: position cache rehydrated — %d open position(s) across %d token(s)",
+            len(open_positions),
+            len(self._pos_cache),
+        )
+
+    def _remove_pos_from_cache(self, pos: Position) -> None:
+        """Remove a position from the in-memory cache (H11 helper)."""
+        bucket = self._pos_cache.get(pos.token_id)
+        if bucket:
+            try:
+                bucket.remove(pos)
+            except ValueError:
+                pass
+            if not bucket:
+                del self._pos_cache[pos.token_id]
+
+    async def _flush_peak_cache(self) -> None:
+        """Persist debounced peak_price updates to SQLite in a single batch commit (H11)."""
+        self._last_peak_flush = time.monotonic()
+        if not self._peak_dirty:
+            return
+        dirty = dict(self._peak_dirty)
+        self._peak_dirty.clear()
+        await self.portfolio.batch_update_peak_prices(dirty)
 
     def _record_skip(self, reason: str, event: TradeEvent, **detail) -> None:
         """Account a skipped copy: bump the skip counter and emit a structured event.
@@ -351,64 +405,67 @@ class CopyTrader:
         if market and market.resolve_time:
             resolve_ts = market.resolve_time.timestamp()
 
-        # 7–10. The position-count check (7) and open_position() write (10) must be
-        #        atomic. Without a lock, concurrent wallet polls via asyncio.gather
-        #        both read count=N < max before either writes, opening one extra
-        #        position beyond the cap (TOCTOU). The lock also covers the order
-        #        placement I/O — acceptable here because we copy at most 5 wallets
-        #        and concurrent entry events are rare and brief.
-        async with self._entry_lock:
-            # 6b. M1: revalidate the edge AFTER acquiring the entry lock. Between the
-            #     initial price fetch and here, time passed — sizing, DB queries, and
-            #     (critically) waiting behind another concurrent entry that held the
-            #     lock. If the price moved adversely beyond max_price_deviation since
-            #     we sized, the edge we validated has collapsed; skip rather than race
-            #     a stale entry. This runs before any exposure is reserved, so there
-            #     is nothing to release on the skip path.
-            if ct.revalidate_edge_before_order:
-                fresh_price = await self.gamma.get_market_price(event.token_id)
-                if fresh_price is None:
-                    if self.config.risk_management.fail_closed_on_missing_data:
-                        logger.info(
-                            "Skip: revalidation price unavailable for %s (fail-closed)",
-                            event.token_id[:10],
-                        )
-                        self._record_skip("missing_price", event)
-                        return
-                else:
-                    reval_dev = (fresh_price - current_price) / max(current_price, 1e-9)
-                    if reval_dev > ct.max_price_deviation:
-                        logger.info(
-                            "Skip: edge collapsed since detection (price %.4f -> %.4f, +%.1f%% > max %.1f%%)",
-                            current_price,
-                            fresh_price,
-                            reval_dev * 100,
-                            ct.max_price_deviation * 100,
-                        )
-                        self._record_skip(
-                            "edge_collapsed_revalidation",
-                            event,
-                            current_price=current_price,
-                            fresh_price=fresh_price,
-                            deviation_pct=round(reval_dev * 100, 2),
-                        )
-                        return
+        # 6b. M1: edge revalidation — moved BEFORE the lock (H12).  This is a network
+        #     call; holding the entry lock across it would serialize all concurrent copy
+        #     events head-of-line for the full RTT.  The price check is still valid: if
+        #     the market moved adversely since we sized, skip.  A tiny additional drift
+        #     while we wait for the lock is absorbed by the existing FOK/fill-reconcile.
+        if ct.revalidate_edge_before_order:
+            fresh_price = await self.gamma.get_market_price(event.token_id)
+            if fresh_price is None:
+                if self.config.risk_management.fail_closed_on_missing_data:
+                    logger.info(
+                        "Skip: revalidation price unavailable for %s (fail-closed)",
+                        event.token_id[:10],
+                    )
+                    self._record_skip("missing_price", event)
+                    return
+            else:
+                reval_dev = (fresh_price - current_price) / max(current_price, 1e-9)
+                if reval_dev > ct.max_price_deviation:
+                    logger.info(
+                        "Skip: edge collapsed since detection (price %.4f -> %.4f, +%.1f%% > max %.1f%%)",
+                        current_price,
+                        fresh_price,
+                        reval_dev * 100,
+                        ct.max_price_deviation * 100,
+                    )
+                    self._record_skip(
+                        "edge_collapsed_revalidation",
+                        event,
+                        current_price=current_price,
+                        fresh_price=fresh_price,
+                        deviation_pct=round(reval_dev * 100, 2),
+                    )
+                    return
 
-            # 7. Cheap gating checks FIRST — before registering exposure, so that a
-            #    rejection here can never leak phantom exposure into the RiskManager.
+        # 7–9. TOCTOU-critical section: cap checks + exposure reservation.
+        # H12: the lock now covers only fast, non-blocking operations (DB reads +
+        # in-memory exposure reservation).  Order I/O runs outside the lock so a
+        # slow network call doesn't serialise concurrent copy events head-of-line.
+        # After this block: pos is set, exposure is reserved, _pending_entries is
+        # incremented, and pos is in the cache — all visible to concurrent entries.
+        pos = None
+        async with self._entry_lock:
+            # 7. Global position cap.  H12: include _pending_entries — positions whose
+            #    exposure is reserved but whose DB row is not yet committed.
             count = await self.portfolio.position_count()
-            if count >= self.config.copy_trading.max_concurrent_positions:
-                logger.info("Skip: max positions (%d) reached", count)
+            if count + self._pending_entries >= self.config.copy_trading.max_concurrent_positions:
+                logger.info(
+                    "Skip: max positions (%d + %d pending) reached",
+                    count,
+                    self._pending_entries,
+                )
                 self._record_skip("max_positions", event, count=count)
                 return
 
-            # 7a. M9: per-token position cap. Inside the entry lock (with the global
-            #     count check) so concurrent polls can't both pass and breach it.
-            #     Prevents two tracked traders piling unbounded copies onto one token.
+            # 7a. Per-token cap — use in-memory cache (O(1), no DB read).  The cache
+            #     includes pending entries added inside the lock, so two concurrent
+            #     events for the same token are serialised correctly.
             max_per_token = self.config.copy_trading.max_positions_per_token
             if max_per_token > 0:
-                token_positions = await self.portfolio.get_positions_by_token(event.token_id)
-                if len(token_positions) >= max_per_token:
+                token_count = len(self._pos_cache.get(event.token_id, []))
+                if token_count >= max_per_token:
                     logger.info(
                         "Skip: max positions per token (%d) reached on %s",
                         max_per_token,
@@ -444,57 +501,58 @@ class CopyTrader:
                 self._record_skip("exposure_cap", event)
                 return
 
-            order = Order(
-                market_id=event.market_id,
-                token_id=event.token_id,
-                side="BUY",
-                price=current_price,
-                size_usdc=copy_size_usdc,
-                # C2/M5: FOK (configurable via entry_order_type) ensures entries either
-                # fill immediately in full or cancel — no resting GTC limit at the
-                # midpoint that fills adversely or never at all.
-                order_type=ct.entry_order_type,
-            )
+            # H11+H12: add to cache inside the lock so a concurrent entry for the same
+            # token sees it in the per-token cap check (7a) above.  If the order fails
+            # below, _remove_pos_from_cache() undoes this.
+            self._pos_cache.setdefault(pos.token_id, []).append(pos)
+            # H12: mark as pending so position_count() + _pending_entries is accurate
+            # while the lock is not held during order I/O.
+            self._pending_entries += 1
 
-            # 10. Place order. On ANY failure, release the exposure build_position
-            #     registered so a never-opened position cannot leak the exposure cap.
-            #     M12: place_order_with_timeout cancels+retries-once a resting live
-            #     order that doesn't fill; FOK (the default entry type) and paper mode
-            #     delegate straight through, so default behavior is unchanged.
+        # 10. Order I/O + DB persistence — outside the lock (H12).
+        # _pending_entries is always decremented in the finally block; cache and
+        # exposure are cleaned up on every failure path before the return.
+        order = Order(
+            market_id=event.market_id,
+            token_id=event.token_id,
+            side="BUY",
+            price=current_price,
+            size_usdc=copy_size_usdc,
+            # C2/M5: FOK ensures entries fill immediately in full or cancel.
+            order_type=ct.entry_order_type,
+        )
+        try:
+            # 10a. Place order.  M12: place_order_with_timeout handles GTC cancel+retry.
             try:
                 order_result = await self.clob.place_order_with_timeout(order)
             except InsufficientLiquidityError as e:
                 logger.info("Skip: insufficient liquidity — %s", e)
+                self._remove_pos_from_cache(pos)
                 await self.risk.release_exposure(pos.market_id, pos.entry_price * pos.size_shares, pos.trader_address)
                 metrics.EXPOSURE_RELEASED.labels(cause="insufficient_liquidity").inc()
                 self._record_skip("insufficient_liquidity", event)
                 return
             except Exception as e:
                 logger.error("Order placement failed: %s", e)
+                self._remove_pos_from_cache(pos)
                 await self.risk.release_exposure(pos.market_id, pos.entry_price * pos.size_shares, pos.trader_address)
                 metrics.EXPOSURE_RELEASED.labels(cause="order_failed").inc()
                 self._record_skip("order_failed", event)
                 return
 
-            # 10a. Reconcile against the ACTUAL fill. In live trading an order can
+            # 10b. Reconcile against the ACTUAL fill.  In live trading an order can
             #      partially fill or not fill at all; assuming a full fill would
             #      overstate pos.size_shares (corrupting PnL, TP/SL share counts) and
             #      strand the unfilled exposure that build_position() reserved.
-            #      PAPER results report a full fill at fill_price, so this is a no-op
-            #      there and paper behaviour is preserved exactly.
             filled_shares, avg_fill_price = self._reconcile_fill(order_result, size_shares, current_price)
 
             # Exposure accounting basis: build_position() registered
-            # `entry_price * size_shares` at the PRE-fill current_price into BOTH the
-            # market and trader buckets. We reconcile against THAT same notional so
-            # nothing leaks — releasing the unfilled fraction of the registered
-            # notional (not the fill-priced notional) keeps release + remaining ==
-            # registered exactly.
+            # `entry_price * size_shares` at the PRE-fill current_price. Reconcile
+            # against THAT notional so release + remaining == registered exactly.
             registered_notional = pos.entry_price * pos.size_shares  # == current_price * size_shares
 
             if filled_shares <= 0.0:
-                # No fill: release the FULL registered notional and abort without
-                # opening a position or subscribing the token.
+                self._remove_pos_from_cache(pos)
                 await self.risk.release_exposure(pos.market_id, registered_notional, pos.trader_address)
                 metrics.EXPOSURE_RELEASED.labels(cause="no_fill").inc()
                 logger.info(
@@ -506,11 +564,6 @@ class CopyTrader:
                 return
 
             if filled_shares < size_shares:
-                # Partial fill: release the unfilled fraction of the REGISTERED
-                # notional so market+trader exposure reflect only the shares actually
-                # acquired. unfilled_fraction is computed against the original
-                # size_shares (the notional basis), so released + remaining ==
-                # registered_notional.
                 unfilled_fraction = (size_shares - filled_shares) / size_shares
                 release_value = registered_notional * unfilled_fraction
                 await self.risk.release_exposure(pos.market_id, release_value, pos.trader_address)
@@ -524,11 +577,7 @@ class CopyTrader:
                     event.market_id[:10],
                 )
 
-            # H5: Set entry/peak to the actual average fill price and recompute TP/SL.
-            # In PAPER mode this is the slippage/fee-adjusted fill_price (full fill).
-            # In LIVE it is the real execution price (avg_fill from reconciled response).
-            # Recomputing TP/SL at fill_price ensures thresholds are correct for the
-            # price we actually paid — not the midpoint we quoted.
+            # H5: set entry/peak to actual fill price and recompute TP/SL.
             fill_price = avg_fill_price
             if fill_price != pos.entry_price:
                 new_tp, new_sl = self.risk._compute_thresholds(fill_price)
@@ -547,6 +596,12 @@ class CopyTrader:
 
             await self.portfolio.open_position(pos)
             metrics.POSITIONS_OPENED.inc()
+        finally:
+            # H12: always decrement — whether the order succeeded, any early return
+            # was taken, or an unexpected exception propagated.  position_count() now
+            # counts the committed row; _pending_entries must not double-count it.
+            if pos is not None:
+                self._pending_entries -= 1
 
         if self.monitor:
             self.monitor.subscribe_token(event.token_id)
@@ -636,22 +691,24 @@ class CopyTrader:
 
     async def handle_price_tick(self, tick: PriceTick) -> None:
         """Called by the monitor's on_price callback for each real-time price update."""
-        # Two tracked traders can each be copied into a SEPARATE position on the
-        # same token. Evaluate ALL of them on this tick — fetching only one would
-        # orphan the rest, silently missing their TP/SL/trailing/time exits until
-        # a poll-based check happens to catch them.
-        positions = await self.portfolio.get_positions_by_token(tick.token_id)
+        # H11: read from in-memory cache — no SQLite round-trip per tick.
+        # Two tracked traders can each hold a SEPARATE position on the same token;
+        # evaluate ALL of them so no position is orphaned on this tick.
+        positions = list(self._pos_cache.get(tick.token_id, []))
         for pos in positions:
-            # evaluate() uses effective_peak internally without mutating pos.peak_price.
-            # We own the DB write here so concurrent tick handlers can't race on
-            # in-memory state.
             reason = self.risk.evaluate(pos, tick.price)
 
             if pos.peak_price is None or tick.price > pos.peak_price:
-                await self.portfolio.update_peak_price(pos.position_id, tick.price)
+                # H11: update the in-memory object immediately; DB write is debounced.
+                pos.peak_price = tick.price
+                self._peak_dirty[pos.position_id] = tick.price
 
             if reason != ExitReason.HOLD:
                 await self._exit_position(pos, tick.price, reason)
+
+        # H11: debounced peak flush — at most one SQLite batch-write per interval.
+        if self._peak_dirty and (time.monotonic() - self._last_peak_flush) >= self._peak_persist_interval:
+            await self._flush_peak_cache()
 
     async def _exit_position(self, pos, price: float, reason: ExitReason) -> None:
         """Acquire the per-position lock and close the position, skipping if an exit is already in progress."""
@@ -741,6 +798,11 @@ class CopyTrader:
                 pos.position_id,
             )
             return
+        # H11: position is committed-closed in the DB; evict from in-memory cache and
+        # remove any pending peak write that would re-open the DB row's peak_price.
+        self._remove_pos_from_cache(pos)
+        self._peak_dirty.pop(pos.position_id, None)
+
         await self.risk.record_exit(pos, avg_fill_price)
 
         if self.monitor:
@@ -784,11 +846,8 @@ class CopyTrader:
         our thesis for the position. Multiple traders can hold the same token,
         so close only the matching wallet's copies and leave the others open.
         """
-        positions = [
-            p
-            for p in await self.portfolio.get_positions_by_token(event.token_id)
-            if p.trader_address == event.wallet_address
-        ]
+        # H11: use in-memory cache for the lookup (no DB read).
+        positions = [p for p in self._pos_cache.get(event.token_id, []) if p.trader_address == event.wallet_address]
         if not positions:
             return
 

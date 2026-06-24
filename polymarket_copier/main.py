@@ -125,6 +125,10 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
         poll_jitter=config.poll_jitter_seconds,
     )
     copier.monitor = monitor
+    copier._peak_persist_interval = config.peak_persist_interval_seconds
+    # H11: warm the in-memory position cache from the DB so handle_price_tick()
+    # has zero-latency position lookups from the first WS tick onward.
+    await copier.rehydrate_position_cache()
 
     shutdown_event = asyncio.Event()
 
