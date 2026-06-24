@@ -96,6 +96,8 @@ class RiskManagementConfig(BaseModel):
     # Fail CLOSED (skip) when market metadata or current price can't be fetched,
     # rather than trading on missing/stale data.
     fail_closed_on_missing_data: bool = True
+    # H4: Maximum fraction of bankroll deployed across all open positions at once.
+    max_total_exposure_pct: float = 0.30
 
 
 class LoggingConfig(BaseModel):
@@ -118,6 +120,8 @@ class AppConfig(BaseModel):
     api_secret: str = ""
     api_passphrase: str = ""
     bankroll: float = 500
+    # H9: seconds before the watchdog fires a stall alert; 0 = auto (3× poll_interval)
+    detection_stall_alert_seconds: float = 0.0
 
 
 def load_config(

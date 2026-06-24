@@ -248,6 +248,13 @@ class PortfolioManager:
         )
         await db.commit()
 
+    async def get_open_unrealized_pnl_conservative(self) -> float:
+        """Return sum of (sl_price - entry_price)*size_shares for all open positions.
+        This is always <= 0 and represents the maximum realizable loss if all stops
+        are hit — a conservative mark-to-market for the daily-loss breaker."""
+        positions = await self.get_open_positions()
+        return sum(pos.pnl_at(pos.sl_price) for pos in positions)
+
     async def get_trader_pnl(self, trader_address: str) -> float:
         db = self._require_db()
         cursor = await db.execute(

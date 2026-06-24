@@ -118,6 +118,7 @@ class RiskConfig:
     daily_loss_limit_pct: float     = 0.03   # Stop all trading if daily loss > 3% bankroll
     max_market_exposure_pct: float  = 0.08   # Max 8% of bankroll in any one market
     max_trader_allocation: float    = 0.05   # Max 5% of bankroll copied from any one trader
+    max_total_exposure_pct: float   = 0.30   # H4: Max 30% of bankroll deployed at once
 
     # --- Post-loss cooldown ---
     cooldown_after_losses: int      = 3      # Pause entries after N consecutive losses
@@ -242,6 +243,7 @@ class RiskManager:
         async with self._exposure_lock:
             self._assert_exposure_cap(market_id, position_value)
             self._assert_trader_allocation(trader_address, position_value)
+            self._assert_total_exposure(position_value)
 
             pos = Position(
                 position_id    = position_id,
@@ -411,28 +413,28 @@ class RiskManager:
         else:
             self._consecutive_losses = 0
 
-    def is_trading_halted(self) -> Optional[str]:
+    def is_trading_halted(self, unrealized_pnl: float = 0.0) -> Optional[str]:
         """Return a reason string if NEW entries should be blocked, else None.
 
         Checked on the ENTRY path so the daily-loss circuit breaker and the
         post-loss cooldown cannot be bypassed by opening fresh positions — the
         per-tick evaluate() only governs EXITS of already-open positions.
+
+        H3: unrealized_pnl (conservative SL-based mark) is added to realized daily
+        PnL so open drawdowns are counted toward the circuit breaker.
         """
         self._maybe_reset_daily_window()
-
-        daily_pnl_f      = float(self._daily_pnl)
+        combined_pnl = float(self._daily_pnl) + unrealized_pnl
         daily_loss_limit = -(self.bankroll * self.cfg.daily_loss_limit_pct)
-        if daily_pnl_f <= daily_loss_limit:
+        if combined_pnl <= daily_loss_limit:
             return (
-                f"daily loss limit (daily_pnl=${daily_pnl_f:.2f} "
+                f"daily loss limit (realized+unrealized=${combined_pnl:.2f} "
                 f"<= ${daily_loss_limit:.2f})"
             )
 
         remaining = self._cooldown_until - time.time()
         if remaining > 0:
-            return (
-                f"post-loss cooldown active for {remaining / 60.0:.1f} more min"
-            )
+            return f"post-loss cooldown active for {remaining / 60.0:.1f} more min"
 
         return None
 
@@ -598,6 +600,16 @@ class RiskManager:
                 f"Market {market_id}: existing=${current:.2f} + new=${new_value:.2f} "
                 f"= ${current + new_value:.2f} > cap=${cap:.2f} "
                 f"({self.cfg.max_market_exposure_pct * 100:.0f}% of ${self.bankroll:.2f})"
+            )
+
+    def _assert_total_exposure(self, new_value: float) -> None:
+        cap = self.bankroll * self.cfg.max_total_exposure_pct
+        total = float(sum(self._market_exposure.values(), _ZERO)) + new_value
+        if total > cap:
+            raise ExposureCapError(
+                f"Total exposure ${total:.2f} would exceed "
+                f"{self.cfg.max_total_exposure_pct*100:.0f}% cap "
+                f"(${cap:.2f} of ${self.bankroll:.2f})"
             )
 
     def _assert_trader_allocation(self, trader_address: str, new_value: float) -> None:
