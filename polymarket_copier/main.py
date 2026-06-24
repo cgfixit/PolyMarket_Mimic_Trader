@@ -128,6 +128,10 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
         poll_interval=config.polling_interval_seconds,
         ws_max_backoff=config.risk_management.ws_max_backoff_seconds,
         poll_jitter=config.poll_jitter_seconds,
+        # L1: per-wallet adaptive hot polling. M16: bounded WS ingest queue.
+        hot_poll_interval=config.hot_poll_interval_seconds,
+        hot_poll_window=config.hot_poll_window_seconds,
+        tick_queue_maxsize=config.tick_queue_maxsize,
     )
     copier.monitor = monitor
     copier._peak_persist_interval = config.peak_persist_interval_seconds

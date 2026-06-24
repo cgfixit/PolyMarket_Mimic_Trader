@@ -65,6 +65,9 @@ _MAX_WS_RETRIES = 5  # consecutive failures before logging a warning burst
 _WS_MAX_BACKOFF = 30.0  # H10: cap so WS retries at most every 30s, never 80s+
 _POLL_JITTER_SEC = 2.0  # H17: bound on poll-interval jitter + per-wallet stagger
 _MIN_POLL_FLOOR = 1.0  # H17: never let jitter drive the cycle below this floor
+_HOT_POLL_INTERVAL_SEC = 2.0  # L1: fast interval for a wallet that just traded
+_HOT_POLL_WINDOW_SEC = 30.0  # L1: how long a wallet stays "hot" after a trade
+_TICK_QUEUE_MAXSIZE = 1000  # M16: bounded WS ingest queue (drop-oldest when full)
 
 
 # ─── Data Models ──────────────────────────────────────────────────────────────
@@ -146,6 +149,9 @@ class TradeMonitor:
         ws_max_backoff: float = _WS_MAX_BACKOFF,
         poll_jitter: float = _POLL_JITTER_SEC,
         jitter_seed: Optional[int] = None,
+        hot_poll_interval: float = _HOT_POLL_INTERVAL_SEC,
+        hot_poll_window: float = _HOT_POLL_WINDOW_SEC,
+        tick_queue_maxsize: int = _TICK_QUEUE_MAXSIZE,
     ):
         if not tracked_wallets:
             raise ValueError("tracked_wallets must be non-empty.")
@@ -165,6 +171,16 @@ class TradeMonitor:
         # production it is None (system-seeded, genuinely unpredictable).
         self._poll_jitter = max(0.0, poll_jitter)
         self._rng = random.Random(jitter_seed)
+        # L1: adaptive hot polling. After a wallet trades it is polled at
+        # _hot_poll_interval for _hot_poll_window seconds, decaying linearly back to
+        # the base interval. Only that wallet speeds up. window<=0 disables it.
+        self._hot_poll_interval = max(_MIN_POLL_FLOOR, hot_poll_interval)
+        self._hot_poll_window = max(0.0, hot_poll_window)
+        # Per-wallet scheduler state (monotonic clock). _wallet_next_due[w] is when
+        # wallet w is next eligible to poll; _wallet_hot_until[w] is the monotonic
+        # deadline until which w is "hot". Empty until the first poll loop iteration.
+        self._wallet_next_due: Dict[str, float] = {}
+        self._wallet_hot_until: Dict[str, float] = {}
         # Rate-limit the hot REST poll path to avoid 429s from the Data API.
         # Default: 25 requests / 60 s (headroom below the assumed 30/min cap).
         # Inject a custom limiter in main.py to share budget across components.
@@ -188,6 +204,20 @@ class TradeMonitor:
         # Snapshot of what was last sent in a subscription message.
         # _maybe_update_subscription diffs against this to avoid redundant sends.
         self._last_subscribed: Set[str] = set()
+        # M16: subscription updates are driven off this event instead of running a
+        # set-diff on every inbound frame. subscribe_token/unsubscribe_token set it;
+        # a dedicated sender task (per WS connection) wakes, diffs, and sends.
+        self._subscription_dirty: asyncio.Event = asyncio.Event()
+
+        # M16: bounded ingest queue. The socket reader parses frames and enqueues
+        # the raw message; a consumer task drains it and runs the (possibly slow)
+        # price handler. maxsize<=0 disables the queue (inline handling). Created in
+        # run() so it binds to the running loop. _dropped_ticks counts drop-oldest
+        # evictions for observability.
+        self._tick_queue_maxsize = max(0, tick_queue_maxsize)
+        self._tick_queue: Optional[asyncio.Queue] = None
+        self._tick_consumer_task: Optional[asyncio.Task] = None
+        self._dropped_ticks: int = 0
 
         # Whether the WS is currently connected and healthy
         self._ws_healthy: bool = False
@@ -210,19 +240,28 @@ class TradeMonitor:
             "available" if _WS_AVAILABLE else "NOT INSTALLED",
         )
 
+        # M16: bind the bounded ingest queue + start its consumer on the running
+        # loop. The consumer persists across WS reconnects so no ticks are lost on
+        # a socket bounce.
+        if self._tick_queue_maxsize > 0:
+            self._tick_queue = asyncio.Queue(maxsize=self._tick_queue_maxsize)
+
         tasks = [
             asyncio.create_task(self._poll_loop(), name="activity-poller"),
         ]
 
         if _WS_AVAILABLE:
             tasks.append(asyncio.create_task(self._ws_loop(), name="ws-listener"))
+            if self._tick_queue is not None:
+                self._tick_consumer_task = asyncio.create_task(self._tick_consumer(), name="tick-consumer")
+                tasks.append(self._tick_consumer_task)
         else:
             logger.warning(
                 "websockets package not installed. Running poll-only mode. Install with: pip install websockets>=12.0"
             )
 
         self._poll_task = tasks[0]
-        self._ws_task = tasks[1] if len(tasks) > 1 else None
+        self._ws_task = tasks[1] if _WS_AVAILABLE else None
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -230,7 +269,10 @@ class TradeMonitor:
         """Signal both loops to exit cleanly."""
         logger.info("TradeMonitor stopping.")
         self._stop_event.set()
-        for task in [self._ws_task, self._poll_task]:
+        # M16: wake any sender/consumer parked on the dirty event so they observe
+        # the stop flag and exit promptly rather than hanging until the next tick.
+        self._subscription_dirty.set()
+        for task in [self._ws_task, self._poll_task, self._tick_consumer_task]:
             if task and not task.done():
                 task.cancel()
                 try:
@@ -241,11 +283,15 @@ class TradeMonitor:
     def subscribe_token(self, token_id: str) -> None:
         """Register a token ID for real-time price feed via WebSocket."""
         self._subscribed_tokens.add(token_id)
+        # M16: flag the subscription as changed so the off-frame sender pushes the
+        # update; we no longer diff on every inbound frame.
+        self._subscription_dirty.set()
         logger.debug("Queued WS subscription for token %s", token_id)
 
     def unsubscribe_token(self, token_id: str) -> None:
         """Remove a token from the real-time price feed (after position closed)."""
         self._subscribed_tokens.discard(token_id)
+        self._subscription_dirty.set()
 
     def set_wallets(self, wallets: list[str]) -> None:
         """Replace the tracked-wallet list without losing seen-id state for retained wallets.
@@ -315,7 +361,15 @@ class TradeMonitor:
                 await asyncio.sleep(delay)
 
     async def _ws_connect_and_listen(self) -> None:
-        """Open a single WebSocket connection and process messages until disconnect."""
+        """Open a single WebSocket connection and process messages until disconnect.
+
+        M16: the read loop no longer awaits the price handler or diffs the
+        subscription on every frame — both could stall the socket read (a slow
+        SQLite write in _on_price would back-pressure the connection and drop the
+        real-time feed). Instead inbound frames are handed to a bounded drop-oldest
+        queue drained by a separate consumer, and subscription updates are pushed by
+        a dedicated sender task woken off self._subscription_dirty.
+        """
         async with websockets.connect(
             self._ws_url,
             ping_interval=_WS_PING_INTERVAL,
@@ -327,18 +381,91 @@ class TradeMonitor:
 
             if self._subscribed_tokens:
                 await self._ws_send_subscription(ws, list(self._subscribed_tokens))
+                self._last_subscribed = set(self._subscribed_tokens)
+                self._subscription_dirty.clear()
 
-            async for raw_msg in ws:
-                if self._stop_event.is_set():
-                    break
-
-                await self._maybe_update_subscription(ws)
-
+            sender = asyncio.create_task(self._subscription_sender(ws), name="ws-sub-sender")
+            try:
+                async for raw_msg in ws:
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        msg_str = raw_msg.decode() if isinstance(raw_msg, bytes) else raw_msg
+                    except Exception as exc:
+                        logger.warning("WS frame decode error: %s | raw=%r", exc, raw_msg[:200])
+                        continue
+                    # M16: hand off without blocking the read. When the queue is
+                    # disabled (maxsize=0) fall back to inline handling (legacy).
+                    if self._tick_queue is not None:
+                        self._enqueue_tick(msg_str)
+                    else:
+                        await self._handle_ws_message(msg_str)
+            finally:
+                sender.cancel()
                 try:
-                    msg_str = raw_msg.decode() if isinstance(raw_msg, bytes) else raw_msg
-                    await self._handle_ws_message(msg_str)
-                except Exception as exc:
-                    logger.warning("WS message parse error: %s | raw=%r", exc, raw_msg[:200])
+                    await sender
+                except asyncio.CancelledError:
+                    pass
+
+    async def _subscription_sender(self, ws) -> None:
+        """M16: push subscription diffs to the venue when flagged, off the read path.
+
+        Parks on self._subscription_dirty; wakes on subscribe/unsubscribe (or stop),
+        sends the current token set if it changed, then waits again. Decoupling this
+        from the per-frame read loop means a burst of inbound ticks never delays a
+        subscription update and a subscription send never delays tick ingest.
+        """
+        while not self._stop_event.is_set():
+            await self._subscription_dirty.wait()
+            self._subscription_dirty.clear()
+            if self._stop_event.is_set():
+                return
+            await self._maybe_update_subscription(ws)
+
+    def _enqueue_tick(self, msg: str) -> None:
+        """M16: enqueue a raw WS frame, dropping the OLDEST tick when the queue is full.
+
+        Drop-oldest (not drop-newest) keeps the freshest price for an instrument we
+        actively manage: a stale tick is worthless, the latest one drives TP/SL. The
+        socket reader never awaits here, so a slow consumer can never back-pressure
+        the read loop and stall the connection.
+        """
+        q = self._tick_queue
+        if q is None:
+            return
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            try:
+                q.get_nowait()
+                q.task_done()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                q.put_nowait(msg)
+            except asyncio.QueueFull:
+                pass
+            self._dropped_ticks += 1
+            # Log sparsely so a sustained overflow doesn't itself become the stall.
+            if self._dropped_ticks % 100 == 1:
+                logger.warning(
+                    "WS tick queue full — dropped %d stale tick(s) (maxsize=%d)",
+                    self._dropped_ticks,
+                    self._tick_queue_maxsize,
+                )
+
+    async def _tick_consumer(self) -> None:
+        """M16: drain the ingest queue and run the price handler off the socket read."""
+        q = self._tick_queue
+        assert q is not None
+        while not self._stop_event.is_set():
+            msg = await q.get()
+            try:
+                await self._handle_ws_message(msg)
+            except Exception as exc:
+                logger.warning("Tick consumer error: %s", exc)
+            finally:
+                q.task_done()
 
     async def _ws_send_subscription(self, ws, token_ids: List[str]) -> None:
         """Send a Market subscription message to the Polymarket CLOB WebSocket."""
@@ -407,8 +534,39 @@ class TradeMonitor:
         jittered = self._poll_interval + self._rng.uniform(-self._poll_jitter, self._poll_jitter)
         return max(jittered, _MIN_POLL_FLOOR)
 
+    def _wallet_interval(self, wallet: str, now: float) -> float:
+        """L1: the next poll interval (seconds) for a single wallet.
+
+        Hot wallet (within the window after a detected trade): start at
+        hot_poll_interval and decay linearly back to the base interval as the
+        window elapses — so detection stays fast right after a move and relaxes as
+        the burst goes quiet. Cold wallet: the base interval with H17 jitter. When
+        hot polling is disabled (window<=0) every wallet uses the base interval.
+        """
+        hot_until = self._wallet_hot_until.get(wallet, 0.0)
+        if self._hot_poll_window > 0 and now < hot_until:
+            remaining = hot_until - now
+            # frac: 1.0 immediately after the trade → 0.0 at window expiry.
+            frac = max(0.0, min(1.0, remaining / self._hot_poll_window))
+            base = float(self._poll_interval)
+            interval = base - (base - self._hot_poll_interval) * frac
+            return max(self._hot_poll_interval, interval)
+        return self._next_interval()
+
+    def _mark_wallet_hot(self, wallet: str) -> None:
+        """L1: start (or extend) a wallet's hot window after it trades."""
+        if self._hot_poll_window > 0:
+            self._wallet_hot_until[wallet] = time.monotonic() + self._hot_poll_window
+
     async def _poll_loop(self) -> None:
-        """Polls the Polymarket Data API for new trades from tracked wallets."""
+        """Polls the Polymarket Data API for new trades from tracked wallets.
+
+        L1: per-wallet adaptive scheduler. Each wallet carries its own next-due
+        time; a wallet polled and found active enters a hot window during which it
+        is polled faster (decaying back to base), while the rest of the set stays on
+        the base cadence. Only the active wallet speeds up, so a fresh move is
+        detected sooner without multiplying the shared rate-limit budget.
+        """
         async with aiohttp.ClientSession(
             headers={"User-Agent": "polymarket-copier/1.0"},
             # L2: keepalive_timeout=30 keeps TCP connections alive across the 8s
@@ -417,18 +575,33 @@ class TradeMonitor:
             connector=aiohttp.TCPConnector(limit=20, keepalive_timeout=30),
             timeout=aiohttp.ClientTimeout(total=10),
         ) as session:
-            # Use a fixed deadline rather than computing leftover time from elapsed.
-            # This prevents drift: a slow poll (e.g. 9s on an 8s interval) would
-            # previously clamp sleep to 0 and effectively double the next interval.
-            next_deadline = time.monotonic() + self._next_interval()
+            now = time.monotonic()
+            for wallet in self._wallets:
+                self._wallet_next_due.setdefault(wallet, now)
             while not self._stop_event.is_set():
-                await self._poll_all_wallets(session)
-                self.last_poll_completed_at = time.time()
+                now = time.monotonic()
+                # Pick up wallets added by set_wallets() since the last iteration so
+                # they poll immediately rather than waiting a full cycle.
+                for wallet in self._wallets:
+                    self._wallet_next_due.setdefault(wallet, now)
 
-                sleep = max(0.0, next_deadline - time.monotonic())
-                # H17: each cycle advances by a freshly-jittered interval.
-                next_deadline += self._next_interval()
-                logger.debug("Poll cycle done. Next in %.2fs.", sleep)
+                due = [w for w in self._wallets if self._wallet_next_due.get(w, now) <= now]
+                if due:
+                    await self._poll_wallets(session, due)
+                    self.last_poll_completed_at = time.time()
+                    after = time.monotonic()
+                    for wallet in due:
+                        self._wallet_next_due[wallet] = after + self._wallet_interval(wallet, after)
+
+                # Sleep until the earliest upcoming due time, bounded by the base
+                # interval so newly-hot wallets / set_wallets() additions are seen
+                # promptly even if a far-future due time dominates the min.
+                now2 = time.monotonic()
+                tracked = set(self._wallets)
+                upcoming = [t for w, t in self._wallet_next_due.items() if w in tracked]
+                next_due = min(upcoming) if upcoming else now2 + self._poll_interval
+                sleep = min(max(0.0, next_due - now2), float(self._poll_interval))
+                logger.debug("Poll cycle done. Next due in %.2fs.", sleep)
 
                 if sleep > 0.001:
                     try:
@@ -436,9 +609,15 @@ class TradeMonitor:
                         break  # stop_event was set
                     except asyncio.TimeoutError:
                         pass  # Normal — sleep elapsed, continue polling
+                else:
+                    await asyncio.sleep(0)  # yield so a 0s sleep can't busy-spin
 
     async def _poll_all_wallets(self, session: aiohttp.ClientSession) -> None:
-        """Fetch activity for all tracked wallets concurrently.
+        """Fetch activity for every tracked wallet concurrently (one full sweep)."""
+        await self._poll_wallets(session, self._wallets)
+
+    async def _poll_wallets(self, session: aiohttp.ClientSession, wallets: List[str]) -> None:
+        """Fetch activity for the given wallets concurrently.
 
         H17: each wallet's fetch is offset by a small, freshly-drawn per-wallet
         phase delay in [0, poll_jitter]. Without it every wallet is polled at the
@@ -446,10 +625,10 @@ class TradeMonitor:
         one wallet learns it for all. The bounded offset decorrelates per-wallet
         timing while keeping detection latency within poll_jitter of immediate.
         """
-        tasks = [self._poll_wallet_staggered(session, wallet) for wallet in self._wallets]
+        tasks = [self._poll_wallet_staggered(session, wallet) for wallet in wallets]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for wallet, result in zip(self._wallets, results, strict=True):
+        for wallet, result in zip(wallets, results, strict=True):
             if isinstance(result, Exception):
                 logger.warning("Poll failed for wallet %s: %s", wallet[:10], result)
 
@@ -494,6 +673,9 @@ class TradeMonitor:
 
         if new_trades:
             logger.info("Detected %d new trade(s) from wallet %s", len(new_trades), wallet[:10])
+            # L1: this wallet is active — enter its hot window so the scheduler polls
+            # it faster (decaying back to base) while the burst continues.
+            self._mark_wallet_hot(wallet)
 
         for raw_trade in new_trades:
             event = _parse_trade_event(wallet, raw_trade)

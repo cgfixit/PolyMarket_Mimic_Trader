@@ -647,3 +647,155 @@ class TestPollJitter:
         monitor._poll_wallet = fake_poll
         await monitor._poll_all_wallets(_FakeSessionMonitor([]))
         assert sorted(polled) == ["0xa", "0xb", "0xc"]
+
+
+# ─── M16: bounded WS ingest queue + off-frame subscription updates ─────────────
+
+
+class TestTickQueueDropOldest:
+    """M16: the WS read path enqueues onto a bounded drop-oldest queue so a slow
+    price handler can never back-pressure the socket reader and stall the feed."""
+
+    @pytest.mark.asyncio
+    async def test_enqueue_drops_oldest_when_full(self):
+        import asyncio
+
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade, tick_queue_maxsize=2)
+        monitor._tick_queue = asyncio.Queue(maxsize=2)
+        monitor._enqueue_tick("m1")
+        monitor._enqueue_tick("m2")
+        monitor._enqueue_tick("m3")  # full → drops oldest (m1)
+
+        drained = []
+        while not monitor._tick_queue.empty():
+            drained.append(monitor._tick_queue.get_nowait())
+        assert drained == ["m2", "m3"], "oldest tick should be dropped, freshest kept"
+        assert monitor._dropped_ticks == 1
+
+    @pytest.mark.asyncio
+    async def test_enqueue_noop_when_queue_disabled(self):
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade, tick_queue_maxsize=0)
+        assert monitor._tick_queue is None
+        monitor._enqueue_tick("m1")  # must not raise
+        assert monitor._dropped_ticks == 0
+
+    @pytest.mark.asyncio
+    async def test_consumer_drains_queue_into_on_price(self):
+        import asyncio
+        import json
+
+        got = []
+
+        async def on_price(tick):
+            got.append(tick)
+
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade, on_price=on_price, tick_queue_maxsize=8)
+        monitor.subscribe_token("tok-a")
+        monitor._tick_queue = asyncio.Queue(maxsize=8)
+        raw = json.dumps([{"event_type": "price_change", "asset_id": "tok-a", "price": "0.61"}])
+        monitor._enqueue_tick(raw)
+
+        consumer = asyncio.create_task(monitor._tick_consumer())
+        try:
+            for _ in range(50):
+                if got:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            monitor._stop_event.set()
+            consumer.cancel()
+            try:
+                await consumer
+            except asyncio.CancelledError:
+                pass
+        assert len(got) == 1
+        assert got[0].token_id == "tok-a"
+        assert got[0].price == pytest.approx(0.61)
+
+
+class TestSubscriptionDirtyEvent:
+    """M16: subscription updates are driven off an event set by subscribe/unsubscribe,
+    not re-diffed on every inbound frame."""
+
+    def test_subscribe_sets_dirty(self):
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
+        monitor._subscription_dirty.clear()
+        monitor.subscribe_token("tok-1")
+        assert monitor._subscription_dirty.is_set()
+
+    def test_unsubscribe_sets_dirty(self):
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
+        monitor.subscribe_token("tok-1")
+        monitor._subscription_dirty.clear()
+        monitor.unsubscribe_token("tok-1")
+        assert monitor._subscription_dirty.is_set()
+
+
+# ─── L1: per-wallet adaptive "hot" polling ────────────────────────────────────
+
+
+class TestAdaptiveHotPolling:
+    def _monitor(self, **kw):
+        # poll_jitter=0 makes the cold interval deterministically the base interval.
+        params = dict(
+            tracked_wallets=["0xabc"],
+            on_trade=_noop_trade,
+            poll_interval=8.0,
+            poll_jitter=0.0,
+            hot_poll_interval=2.0,
+            hot_poll_window=30.0,
+        )
+        params.update(kw)
+        return TradeMonitor(**params)
+
+    def test_cold_wallet_uses_base_interval(self):
+        m = self._monitor()
+        assert m._wallet_interval("0xabc", time.monotonic()) == pytest.approx(8.0)
+
+    def test_hot_wallet_starts_at_hot_interval(self):
+        m = self._monitor()
+        m._mark_wallet_hot("0xabc")
+        # Immediately after marking: frac≈1 → interval≈hot_poll_interval.
+        assert m._wallet_interval("0xabc", time.monotonic()) == pytest.approx(2.0, abs=0.05)
+
+    def test_hot_interval_decays_toward_base(self):
+        m = self._monitor()
+        now = time.monotonic()
+        m._wallet_hot_until["0xabc"] = now + 15.0  # halfway through the 30s window
+        # frac=0.5 → interval = 8 - (8-2)*0.5 = 5.0
+        assert m._wallet_interval("0xabc", now) == pytest.approx(5.0, abs=0.05)
+
+    def test_expired_hot_window_returns_base(self):
+        m = self._monitor()
+        now = time.monotonic()
+        m._wallet_hot_until["0xabc"] = now - 1.0  # already expired
+        assert m._wallet_interval("0xabc", now) == pytest.approx(8.0)
+
+    def test_hot_polling_disabled_when_window_zero(self):
+        m = self._monitor(hot_poll_window=0.0)
+        m._mark_wallet_hot("0xabc")
+        assert "0xabc" not in m._wallet_hot_until
+        assert m._wallet_interval("0xabc", time.monotonic()) == pytest.approx(8.0)
+
+    @pytest.mark.asyncio
+    async def test_detecting_trades_marks_wallet_hot(self):
+        monitor = TradeMonitor(
+            tracked_wallets=["0xwhale"],
+            on_trade=_noop_trade,
+            prime_on_start=False,  # first poll acts immediately
+            poll_jitter=0.0,
+            hot_poll_window=30.0,
+        )
+        trade = {
+            "type": "TRADE",
+            "id": "t1",
+            "market": "mkt",
+            "asset": "tok",
+            "side": "BUY",
+            "price": 0.5,
+            "size": 100,
+            "timestamp": int(time.time() * 1000),
+        }
+        await monitor._poll_wallet(_FakeSessionMonitor([trade]), "0xwhale")
+        assert "0xwhale" in monitor._wallet_hot_until
+        assert monitor._wallet_hot_until["0xwhale"] > time.monotonic()
