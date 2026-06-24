@@ -272,6 +272,22 @@ class PortfolioManager:
         )
         await db.commit()
 
+    async def batch_update_peak_prices(self, updates: dict) -> None:
+        """Update peak_price for multiple positions in a single transaction (H11 debounced flush).
+
+        Accepts a dict of {position_id: new_peak_price}. A single commit amortises
+        the SQLite I/O cost so the per-tick hot path writes zero bytes to disk.
+        """
+        if not updates:
+            return
+        db = self._require_db()
+        for position_id, peak in updates.items():
+            await db.execute(
+                "UPDATE positions SET peak_price=? WHERE position_id=?",
+                (peak, position_id),
+            )
+        await db.commit()
+
     async def get_open_unrealized_pnl_conservative(self) -> float:
         """Return sum of (sl_price - entry_price)*size_shares for all open positions.
         This is always <= 0 and represents the maximum realizable loss if all stops

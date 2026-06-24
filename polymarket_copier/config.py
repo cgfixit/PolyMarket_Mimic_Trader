@@ -206,6 +206,10 @@ class AppConfig(BaseModel):
     # Randomizes the poll cadence so an observer can't predict when we detect a
     # whale's trade and front-run our copy. 0 disables (fixed periodic polling).
     poll_jitter_seconds: float = 2.0
+    # H11: how often (seconds) to flush debounced peak_price updates from the
+    # in-memory position cache to SQLite.  The final peak is always persisted at
+    # position close regardless of this interval.
+    peak_persist_interval_seconds: float = 30.0
     max_tracked_traders: int = 5
     # M16: Prometheus metrics. When enabled (and prometheus_client is installed) a
     # scrape endpoint is exposed on metrics_port and gauges are refreshed every
