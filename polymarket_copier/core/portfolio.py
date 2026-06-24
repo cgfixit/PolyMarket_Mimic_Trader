@@ -119,11 +119,20 @@ class PortfolioManager:
             return 0.0
         pnl = pos.pnl_at(exit_price)
         closed_at = time.time()
-        await db.execute(
+        # C4 guard: `AND status='open'` makes this UPDATE a no-op if another
+        # coroutine already closed the position (WS tick race, poll sweep, or
+        # SOURCE_EXIT arriving simultaneously). The rowcount check prevents
+        # double-recording the tax lot and double-calling record_exit.
+        cur = await db.execute(
             """UPDATE positions SET status='closed', exit_price=?, exit_reason=?,
-               realized_pnl=?, closed_at=? WHERE position_id=?""",
+               realized_pnl=?, closed_at=? WHERE position_id=? AND status='open'""",
             (exit_price, reason.name, pnl, closed_at, position_id),
         )
+        if cur.rowcount != 1:
+            logger.warning(
+                "Position %s already closed — double-exit race prevented", position_id
+            )
+            return 0.0
         # Record an immutable tax lot in the SAME transaction as the close, so the
         # ledger can never drift from the positions table.
         cost_basis = pos.entry_price * pos.size_shares

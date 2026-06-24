@@ -46,6 +46,11 @@ class CopyTrader:
         # each TrackerClient.refresh(). Used as a Kelly prior when our own closed-
         # trade sample is too small to trust (kelly_seed_from_tracker=True).
         self._tracker_win_rates: dict[str, float] = {}
+        # C4: per-position asyncio locks prevent a double-exit race between two
+        # concurrent triggers (WS tick vs poll sweep vs SOURCE_EXIT).  The DB
+        # `AND status='open'` guard in close_position() is the belt; this is the
+        # suspenders — it stops us placing two live SELL orders for one position.
+        self._exit_locks: dict[str, asyncio.Lock] = {}
 
     def update_tracker_win_rates(self, rates: dict[str, float]) -> None:
         """Replace the current tracker-win-rate prior with freshly scored data.
@@ -249,6 +254,9 @@ class CopyTrader:
                 side="BUY",
                 price=current_price,
                 size_usdc=copy_size_usdc,
+                # C2: FOK ensures entries either fill immediately or cancel — no resting
+                # GTC limit at the midpoint that fills adversely or never at all.
+                order_type="FOK",
             )
 
             # 10. Place order. On ANY failure, release the exposure build_position
@@ -417,23 +425,56 @@ class CopyTrader:
                 await self._exit_position(pos, tick.price, reason)
 
     async def _exit_position(self, pos, price: float, reason: ExitReason) -> None:
+        # C4: per-position lock prevents two concurrent exit triggers (WS tick vs
+        # poll sweep vs SOURCE_EXIT) from both placing a SELL and recording the lot.
+        lock = self._exit_locks.setdefault(pos.position_id, asyncio.Lock())
+        if lock.locked():
+            logger.debug(
+                "Exit already in progress for %s — skipping concurrent trigger",
+                pos.position_id,
+            )
+            return
+        async with lock:
+            await self._exit_position_locked(pos, price, reason)
+        self._exit_locks.pop(pos.position_id, None)
+
+    async def _exit_position_locked(self, pos, price: float, reason: ExitReason) -> None:
+        exit_shares = pos.size_shares
         exit_order = Order(
             market_id=pos.market_id,
             token_id=pos.token_id,
             side="SELL",
             price=price,
-            size_usdc=max(price * pos.size_shares, _EPSILON_USDC),
+            size_usdc=max(price * exit_shares, _EPSILON_USDC),
+            # C2: FAK (Fill-And-Kill / IOC) aggressively hits the bid instead of
+            # resting as a GTC limit at the midpoint, which in a fast down-move
+            # trails the book and never liquidates (unbounded loss).
+            order_type="FAK",
         )
 
         # Retry up to 3 times with exponential backoff. Only close the DB record
-        # after the order succeeds — a failed order leaves the position open so
-        # the next price tick or poll-based sweep can reattempt.
-        placed = False
+        # after a confirmed fill — a zero-fill or exception leaves the position open
+        # so the next price tick or poll sweep can reattempt.
+        filled_shares = 0.0
+        avg_fill_price = price
         for attempt in range(3):
             try:
-                await self.clob.place_order(exit_order)
-                placed = True
-                break
+                exit_result = await self.clob.place_order(exit_order)
+                # C3: reconcile the ACTUAL fill — "placed" ≠ "filled" on live orders.
+                # A FAK that returns without raising can still report zero filled_size
+                # (thin book, nobody on the bid). Treat zero-fill as a failed attempt
+                # rather than a phantom close that reports PnL on shares still held.
+                filled_shares, avg_fill_price = self._reconcile_fill(
+                    exit_result, exit_shares, price
+                )
+                if filled_shares > 0.0:
+                    break
+                logger.warning(
+                    "Exit order attempt %d/3: zero fill for %s — will retry",
+                    attempt + 1, pos.position_id,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
             except Exception as e:
                 if attempt < 2:
                     logger.warning(
@@ -448,18 +489,29 @@ class CopyTrader:
                         pos.position_id, e,
                     )
 
-        if not placed:
+        if filled_shares <= 0.0:
+            # No confirmed fill — leave position open for re-evaluation next tick.
             return
 
-        pnl = await self.portfolio.close_position(pos.position_id, price, reason)
-        await self.risk.record_exit(pos, price)
+        # C4: `AND status='open'` in close_position() is the DB-level guard that
+        # prevents a double-record even if the application lock were somehow bypassed.
+        pnl = await self.portfolio.close_position(pos.position_id, avg_fill_price, reason)
+        if pnl == 0.0 and reason != ExitReason.HOLD:
+            # close_position returned 0.0 due to the DB race guard (position was
+            # already closed by a concurrent exit path). Do not double-call record_exit.
+            logger.warning(
+                "close_position returned 0.0 for %s — skipping record_exit (already closed)",
+                pos.position_id,
+            )
+            return
+        await self.risk.record_exit(pos, avg_fill_price)
 
         if self.monitor:
             self.monitor.unsubscribe_token(pos.token_id)
 
         logger.info(
-            "Exited [%s]: %s pnl=$%.4f @ %.4f",
-            reason.name, pos.position_id, pnl, price,
+            "Exited [%s]: %s pnl=$%.4f @ %.4f (filled=%.2f/%0.2f shares)",
+            reason.name, pos.position_id, pnl, avg_fill_price, filled_shares, exit_shares,
         )
 
     async def _handle_source_exit(self, event: TradeEvent) -> None:
