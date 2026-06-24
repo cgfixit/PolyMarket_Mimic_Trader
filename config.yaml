@@ -39,6 +39,7 @@ risk_management:
   cooldown_after_losses: 3
   cooldown_minutes: 60
   fail_closed_on_missing_data: true
+  max_total_exposure_pct: 0.30
 
 logging:
   level: INFO
