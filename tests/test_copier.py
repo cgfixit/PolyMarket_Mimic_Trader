@@ -621,35 +621,39 @@ class TestFillReconciliation:
 # ─── Kelly tracker-prior seeding ─────────────────────────────────────────────
 
 class TestKellyTrackerPrior:
-    """Kelly sizing uses tracker leaderboard win rate as a warm-up prior when
-    the bot's own closed-trade sample is too small to trust."""
+    """H18: Kelly sizing uses the tracker's DEMONSTRATED edge (from mean per-trade
+    ROI) as a warm-up prior when the bot's own closed-trade sample is too small."""
 
     @pytest.mark.asyncio
     async def test_tracker_prior_used_when_sample_too_small(self, copier):
-        """With sample < min_trades and a tracker rate, Kelly uses the tracker rate."""
+        """With sample < min_trades and a tracker ROI, Kelly sizes from the edge."""
         copier.config.copy_trading.kelly_enabled = True
         copier.config.copy_trading.kelly_min_trades = 20
         copier.config.copy_trading.kelly_seed_from_tracker = True
         copier.config.copy_trading.kelly_fraction_multiplier = 0.25
         copier.config.copy_trading.max_trade_pct = 0.02
-        # 5 closed trades (<20 min), but tracker shows a 70% win rate.
+        copier.config.copy_trading.kelly_edge_shrink = 0.5
+        copier.config.copy_trading.kelly_max_edge = 0.20
+        # 5 closed trades (<20 min), but tracker shows a strong +40% mean ROI.
         await _seed_closed_trades(copier.portfolio, "0xwhale", wins=5, losses=0)
-        copier.update_tracker_win_rates({"0xwhale": 0.70})
+        copier.update_tracker_mean_pnl({"0xwhale": 0.40})
 
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
         assert len(open_pos) == 1
-        # Kelly with tracker win_rate=0.70: f*=0.40, raw=$1000, cap=2%*10k=$200 → 400 shares.
-        # Flat sizing would give 100 shares — confirms tracker rate was used.
+        # edge = roi_to_edge(0.40, 0.50) = 0.20; decay≈1 (just updated).
+        # edge_to_win_prob: 0.20*0.5=0.10 (≤max_edge) → p = 0.50+0.10 = 0.60.
+        # f* = 0.60 - 0.40*0.50/0.50 = 0.20; raw = 10k*0.20*0.25 = $500, cap $200 → 400 shares.
+        # Flat sizing would give 100 shares — confirms the edge path was used.
         assert open_pos[0].size_shares == pytest.approx(400.0)
 
     @pytest.mark.asyncio
     async def test_flat_fallback_when_seeding_disabled(self, copier):
-        """kelly_seed_from_tracker=False → flat formula even when a tracker rate exists."""
+        """kelly_seed_from_tracker=False → flat formula even when a tracker ROI exists."""
         copier.config.copy_trading.kelly_enabled = True
         copier.config.copy_trading.kelly_min_trades = 20
         copier.config.copy_trading.kelly_seed_from_tracker = False
-        copier.update_tracker_win_rates({"0xwhale": 0.70})
+        copier.update_tracker_mean_pnl({"0xwhale": 0.40})
 
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
@@ -659,17 +663,72 @@ class TestKellyTrackerPrior:
 
     @pytest.mark.asyncio
     async def test_flat_fallback_when_wallet_not_in_tracker(self, copier):
-        """Seeding enabled but no tracker rate for this wallet → flat formula."""
+        """Seeding enabled but no tracker ROI for this wallet → flat formula."""
         copier.config.copy_trading.kelly_enabled = True
         copier.config.copy_trading.kelly_min_trades = 20
         copier.config.copy_trading.kelly_seed_from_tracker = True
-        # Tracker rates for a *different* wallet only.
-        copier.update_tracker_win_rates({"0xother": 0.70})
+        # Tracker ROI for a *different* wallet only.
+        copier.update_tracker_mean_pnl({"0xother": 0.40})
 
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
         assert len(open_pos) == 1
         assert open_pos[0].size_shares == pytest.approx(100.0)
+
+    @pytest.mark.asyncio
+    async def test_favorite_buyer_not_oversized(self, copier):
+        """H18 core: a trader with zero ROI (favorite-buyer) has ~0 edge → p ≈ price →
+        no Kelly edge → size 0 → no position. The OLD win-rate bug would oversize here."""
+        copier.config.copy_trading.kelly_enabled = True
+        copier.config.copy_trading.kelly_min_trades = 20
+        copier.config.copy_trading.kelly_seed_from_tracker = True
+        await _seed_closed_trades(copier.portfolio, "0xwhale", wins=5, losses=0)
+        copier.update_tracker_mean_pnl({"0xwhale": 0.0})  # no demonstrated edge
+
+        await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
+        # Kelly enabled + zero edge → size 0 → skipped (no position opened).
+        assert await copier.portfolio.position_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_stale_tracker_prior_decays_size(self, copier):
+        """M4: an aged tracker prior decays the edge toward zero → far smaller size
+        than the same prior fresh."""
+        copier.config.copy_trading.kelly_enabled = True
+        copier.config.copy_trading.kelly_min_trades = 20
+        copier.config.copy_trading.kelly_seed_from_tracker = True
+        copier.config.copy_trading.tracker_prior_decay_enabled = True
+        copier.config.copy_trading.kelly_fraction_multiplier = 0.25
+        copier.config.copy_trading.max_trade_pct = 0.02
+        await _seed_closed_trades(copier.portfolio, "0xwhale", wins=5, losses=0)
+        copier.update_tracker_mean_pnl({"0xwhale": 0.40})
+        # Backdate the update ~1000h → decay = 1/(1+1000) ≈ 0.001 → edge ≈ 0.
+        copier._tracker_updated_at = time.time() - 1000 * 3600
+
+        await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
+        open_pos = await copier.portfolio.get_open_positions()
+        # Fresh, this prior caps at 400 shares (see test above); decayed it is a
+        # tiny fraction of that — proving the prior was down-weighted by age.
+        assert len(open_pos) == 1
+        assert open_pos[0].size_shares < 10.0
+
+    @pytest.mark.asyncio
+    async def test_decay_disabled_keeps_full_prior(self, copier):
+        """M4 kill-switch: tracker_prior_decay_enabled=False → no age down-weight,
+        so even a stale prior sizes at full strength (caps at 400 shares here)."""
+        copier.config.copy_trading.kelly_enabled = True
+        copier.config.copy_trading.kelly_min_trades = 20
+        copier.config.copy_trading.kelly_seed_from_tracker = True
+        copier.config.copy_trading.tracker_prior_decay_enabled = False
+        copier.config.copy_trading.kelly_fraction_multiplier = 0.25
+        copier.config.copy_trading.max_trade_pct = 0.02
+        await _seed_closed_trades(copier.portfolio, "0xwhale", wins=5, losses=0)
+        copier.update_tracker_mean_pnl({"0xwhale": 0.40})
+        copier._tracker_updated_at = time.time() - 1000 * 3600  # stale, but decay off
+
+        await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
+        open_pos = await copier.portfolio.get_open_positions()
+        assert len(open_pos) == 1
+        assert open_pos[0].size_shares == pytest.approx(400.0)
 
     @pytest.mark.asyncio
     async def test_own_sample_takes_over_once_sufficient(self, copier):

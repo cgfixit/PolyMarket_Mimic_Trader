@@ -14,7 +14,7 @@ from polymarket_copier.core import metrics
 from polymarket_copier.core.monitor import PriceTick, TradeEvent, TradeType
 from polymarket_copier.core.portfolio import PortfolioManager
 from polymarket_copier.core.risk_manager import ExitReason, ExposureCapError, RiskManager
-from polymarket_copier.core.sizing import kelly_size_usdc
+from polymarket_copier.core.sizing import kelly_size_from_edge, kelly_size_usdc, roi_to_edge
 from polymarket_copier.models.types import Order
 from polymarket_copier.utils.logger import log_event
 
@@ -48,6 +48,11 @@ class CopyTrader:
         # each TrackerClient.refresh(). Used as a Kelly prior when our own closed-
         # trade sample is too small to trust (kelly_seed_from_tracker=True).
         self._tracker_win_rates: dict[str, float] = {}
+        # H18: tracker mean per-trade ROI per wallet — the demonstrated-edge signal
+        # the Kelly seed path sizes from (instead of raw win rate).
+        self._tracker_mean_pnl: dict[str, float] = {}
+        # M4: wall-clock time of the last tracker update, for decaying a stale prior.
+        self._tracker_updated_at: float = 0.0
         # C4: per-position asyncio locks prevent a double-exit race between two
         # concurrent triggers (WS tick vs poll sweep vs SOURCE_EXIT).  The DB
         # `AND status='open'` guard in close_position() is the belt; this is the
@@ -64,6 +69,17 @@ class CopyTrader:
         the warm-up period before the bot's own sample is large enough.
         """
         self._tracker_win_rates = dict(rates)
+        self._tracker_updated_at = time.time()  # M4: stamp for prior-decay
+
+    def update_tracker_mean_pnl(self, rois: dict[str, float]) -> None:
+        """Replace the tracker mean-per-trade-ROI map (H18 demonstrated-edge signal).
+
+        Called by main.py alongside update_tracker_win_rates after each
+        TrackerClient.refresh(). The edge-based Kelly seed path derives a probability
+        edge from these ROIs rather than from the favorite-buyer-biased win rate.
+        """
+        self._tracker_mean_pnl = dict(rois)
+        self._tracker_updated_at = time.time()  # M4: stamp for prior-decay
 
     def _record_skip(self, reason: str, event: TradeEvent, **detail) -> None:
         """Account a skipped copy: bump the skip counter and emit a structured event.
@@ -274,22 +290,36 @@ class CopyTrader:
                     ct.kelly_fraction_multiplier,
                     ct.max_trade_pct,
                 )
-            elif ct.kelly_seed_from_tracker and event.wallet_address in self._tracker_win_rates:
+            elif ct.kelly_seed_from_tracker and event.wallet_address in self._tracker_mean_pnl:
                 # Our own closed-trade sample is too small to trust (self-reference
                 # bias: portfolio win rate is shaped by our TP/SL rules, not the
-                # trader's true edge). Fall back to the tracker's leaderboard win
-                # rate as a less-biased prior during warm-up.
-                tracker_win_rate = self._tracker_win_rates[event.wallet_address]
-                copy_size_usdc = kelly_size_usdc(
-                    tracker_win_rate,
+                # trader's true edge). Seed from the tracker's leaderboard signal.
+                # H18: size from the DEMONSTRATED edge (derived from mean per-trade
+                # ROI) rather than raw win rate, so a favorite-buyer with a high win
+                # rate but ~zero edge is not oversized.
+                mean_roi = self._tracker_mean_pnl[event.wallet_address]
+                edge = roi_to_edge(mean_roi, current_price)
+                # M4: decay the prior toward neutral (zero edge) as it ages — fresh
+                # leaderboard data is more reliable. A fully-decayed prior → 0 edge
+                # → 0 Kelly size (the correct "no fresh information" outcome).
+                decay = 1.0
+                if ct.tracker_prior_decay_enabled:
+                    hours = max(0.0, (time.time() - self._tracker_updated_at) / 3600.0)
+                    decay = 1.0 / (1.0 + hours)
+                effective_edge = edge * decay
+                copy_size_usdc = kelly_size_from_edge(
+                    effective_edge,
                     current_price,
                     self.risk.bankroll,
                     ct.kelly_fraction_multiplier,
                     ct.max_trade_pct,
+                    edge_shrink=ct.kelly_edge_shrink,
+                    max_edge=ct.kelly_max_edge,
                 )
                 logger.debug(
-                    "Kelly: seeded win_rate=%.3f from tracker (own sample=%d < %d)",
-                    tracker_win_rate, sample, ct.kelly_min_trades,
+                    "Kelly: seeded edge=%.4f (roi=%.4f decay=%.3f) from tracker "
+                    "(own sample=%d < %d)",
+                    effective_edge, mean_roi, decay, sample, ct.kelly_min_trades,
                 )
 
         # Hard ceiling regardless of sizing path.
@@ -407,8 +437,11 @@ class CopyTrader:
 
             # 10. Place order. On ANY failure, release the exposure build_position
             #     registered so a never-opened position cannot leak the exposure cap.
+            #     M12: place_order_with_timeout cancels+retries-once a resting live
+            #     order that doesn't fill; FOK (the default entry type) and paper mode
+            #     delegate straight through, so default behavior is unchanged.
             try:
-                order_result = await self.clob.place_order(order)
+                order_result = await self.clob.place_order_with_timeout(order)
             except InsufficientLiquidityError as e:
                 logger.info("Skip: insufficient liquidity — %s", e)
                 await self.risk.release_exposure(
@@ -635,7 +668,10 @@ class CopyTrader:
         avg_fill_price = price
         for attempt in range(3):
             try:
-                exit_result = await self.clob.place_order(exit_order)
+                # M12: route through the timeout orchestrator so a resting (non-FAK)
+                # exit is cancel-confirmed before any re-post — no stacked live SELLs.
+                # FAK (default exit) and paper mode delegate straight through.
+                exit_result = await self.clob.place_order_with_timeout(exit_order)
                 # C3: reconcile the ACTUAL fill — "placed" ≠ "filled" on live orders.
                 # A FAK that returns without raising can still report zero filled_size
                 # (thin book, nobody on the bid). Treat zero-fill as a failed attempt
@@ -805,9 +841,10 @@ class CopyTrader:
                     min_win_rate=min_win_rate, observed_win_rate=round(win_rate, 4),
                     sample=sample, reason="wilson_below_min_win_rate",
                 )
-        # Remove demoted traders from win-rate tracking so Kelly stops using them
+        # Remove demoted traders from the tracker priors so Kelly stops using them
         for addr in demoted:
             self._tracker_win_rates.pop(addr, None)
+            self._tracker_mean_pnl.pop(addr, None)  # H18: also drop the edge signal
         if demoted:
             metrics.TRADERS_DEMOTED.inc(len(demoted))
         return demoted

@@ -8,7 +8,7 @@ from typing import Literal, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ConfigError(ValueError):
@@ -81,6 +81,31 @@ class CopyTradingConfig(BaseModel):
     # Typed as the CLOB's valid order types so an invalid value is rejected at load.
     entry_order_type: Literal["GTC", "FOK", "GTD", "FAK"] = "FOK"
     exit_order_type: Literal["GTC", "FOK", "GTD", "FAK"] = "FAK"
+    # M12: live-order timeout + safe single retry. Only affects RESTING live order
+    # types (GTC/GTD) — FOK/FAK self-cancel at the venue and bypass this path, and
+    # paper mode delegates straight through, so the default entry=FOK/exit=FAK
+    # configs are unchanged. A resting order unfilled after live_order_timeout_seconds
+    # is cancelled and (after confirming it is terminal with a known fill) retried
+    # ONCE for only the unfilled remainder at live_retry_slippage_pct — sizing the
+    # retry to the gap is the double-position safety guarantee. 0 timeout disables.
+    live_order_timeout_seconds: float = 8.0
+    live_retry_slippage_pct: float = 0.02
+    live_order_max_retries: int = 1
+
+    @model_validator(mode="after")
+    def _validate_live_retry(self) -> "CopyTradingConfig":
+        # M12 safety rails: the retry must cross MORE of the book than the first
+        # attempt, but never arbitrarily far; and we retry at most once.
+        if self.live_retry_slippage_pct < self.max_live_slippage_pct:
+            raise ValueError(
+                "live_retry_slippage_pct must be >= max_live_slippage_pct "
+                f"({self.live_retry_slippage_pct} < {self.max_live_slippage_pct})"
+            )
+        if self.live_retry_slippage_pct > 0.05:
+            raise ValueError("live_retry_slippage_pct must be <= 0.05 (hard ceiling)")
+        if self.live_order_max_retries not in (0, 1):
+            raise ValueError("live_order_max_retries must be 0 or 1")
+        return self
     # Paper-mode fill simulation: apply half-spread slippage + taker fee so
     # paper PnL reflects live execution costs rather than zero-cost fills.
     paper_fill_slippage_pct: float = 0.005   # ~0.5% half-spread
@@ -90,6 +115,17 @@ class CopyTradingConfig(BaseModel):
     # the quoted price when the order book is thin or the market moves fast.
     # Must match or exceed paper_fill_slippage_pct so live/paper parity holds.
     max_live_slippage_pct: float = 0.01       # 1% max walk above order price
+    # M11: size-aware slippage. A flat cap under-prices market impact for large
+    # orders (a $5000 order walks far deeper into the book than a $50 one). For
+    # orders above slippage_size_threshold_usdc, the EXEC-price slippage and the
+    # paper fill cost are scaled up by a bounded sqrt-of-size multiplier
+    # (1 + coeff*(sqrt(size/threshold) - 1)), clamped to [1, slippage_size_max_mult].
+    # The liquidity GATE stays on the base cap but is now VWAP-of-needed-depth, so
+    # big orders that would fill at a bad average price are rejected organically.
+    # coeff=0 disables the scaling (kill switch); sub-threshold orders are unchanged.
+    slippage_size_threshold_usdc: float = 500.0
+    slippage_size_coeff: float = 0.5
+    slippage_size_max_mult: float = 3.0
     # H5: Expected round-trip cost (entry slip + taker fee + exit fee) used for
     # the pre-copy edge check and the TP revalidation after fill reconciliation.
     # Default matches paper mode (0.5% slip + 2% fee + 2% exit fee ≈ 4.5%).
@@ -101,14 +137,26 @@ class CopyTradingConfig(BaseModel):
     # size_multiplier formula is used. The max_trade_pct cap always applies.
     kelly_enabled: bool = False
     kelly_fraction_multiplier: float = 0.25
-    kelly_min_trades: int = 20
-    # When True (default), Kelly sizing can use the tracker's observed win rate as
+    # M3: minimum closed-trade sample before trusting an observed edge for Kelly
+    # sizing. Raised 20 -> 50 so early-stage luck can't trigger oversizing.
+    kelly_min_trades: int = 50
+    # When True (default), Kelly sizing can use the tracker's leaderboard signal as
     # a prior while our own closed-trade sample is smaller than kelly_min_trades.
-    # The tracker's win rate comes from the live leaderboard and is not shaped by
-    # our TP/SL rules, so it is a less biased estimate than the portfolio win rate
+    # The tracker data comes from the live leaderboard and is not shaped by our
+    # TP/SL rules, so it is a less biased estimate than the portfolio win rate
     # during the early warm-up period. Disabled automatically when the bot's own
     # sample reaches kelly_min_trades (the portfolio rate then takes over).
     kelly_seed_from_tracker: bool = True
+    # H18: the tracker-seed Kelly path sizes from the trader's DEMONSTRATED edge
+    # (derived from mean per-trade ROI) rather than raw win rate. edge_shrink scales
+    # the raw edge down (Kelly punishes overestimated edge; 0.5 = halve it) and
+    # max_edge caps the implied probability edge so one lucky sample can't push the
+    # win-prob to an extreme.
+    kelly_edge_shrink: float = 0.5
+    kelly_max_edge: float = 0.20
+    # M4: decay the tracker prior toward neutral (zero edge) as it ages — fresh
+    # leaderboard data is more reliable. Weight = 1/(1 + hours_since_last_update).
+    tracker_prior_decay_enabled: bool = True
 
 
 class RiskManagementConfig(BaseModel):
