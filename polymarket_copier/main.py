@@ -179,6 +179,19 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
     async def rebalance_loop() -> None:
         while not shutdown_event.is_set():
             await asyncio.sleep(3600)
+            # M9: resync bankroll from the live CLOB balance so exposure caps don't
+            # drift from reality as trades settle and deposits/withdrawals happen.
+            # Guard against None (network error) and non-positive (API anomaly).
+            if config.mode == "live":
+                try:
+                    live_balance = await clob_client.get_balance()
+                    if live_balance is not None and live_balance > 0:
+                        risk_manager.bankroll = live_balance
+                        logger.info("Bankroll resynced from CLOB: $%.2f", live_balance)
+                    else:
+                        logger.warning("Bankroll resync skipped: get_balance() returned %r", live_balance)
+                except Exception as exc:
+                    logger.warning("Bankroll resync failed: %s", exc)
             if tracker.needs_rebalance:
                 new_traders = await tracker.refresh()
                 if new_traders:

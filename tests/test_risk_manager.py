@@ -380,9 +380,18 @@ class TestTrailingStop:
 class TestTimeExit:
     @pytest.mark.asyncio
     async def test_time_exit_triggers_when_stale(self, rm):
+        # M8: TIME_EXIT fires only when the position is NOT profitable; use a
+        # price below entry so the PnL guard doesn't suppress it.
         pos = await build(rm, 0.50)
         pos.entry_time = time.time() - (50 * 3_600)
-        assert rm.evaluate(pos, 0.51) == ExitReason.TIME_EXIT
+        assert rm.evaluate(pos, 0.49) == ExitReason.TIME_EXIT
+
+    @pytest.mark.asyncio
+    async def test_time_exit_suppressed_when_profitable(self, rm):
+        # M8: a stale winner should NOT be ejected — it may resolve in our favour.
+        pos = await build(rm, 0.50)
+        pos.entry_time = time.time() - (50 * 3_600)
+        assert rm.evaluate(pos, 0.51) == ExitReason.HOLD
 
     @pytest.mark.asyncio
     async def test_time_exit_suppressed_by_large_range_move(self, rm):

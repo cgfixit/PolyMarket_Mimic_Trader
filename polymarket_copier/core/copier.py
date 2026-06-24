@@ -122,6 +122,7 @@ class CopyTrader:
             try:
                 bucket.remove(pos)
             except ValueError:
+                # Position was already evicted by a concurrent exit — safe to ignore.
                 pass
             if not bucket:
                 del self._pos_cache[pos.token_id]
@@ -803,7 +804,7 @@ class CopyTrader:
         self._remove_pos_from_cache(pos)
         self._peak_dirty.pop(pos.position_id, None)
 
-        await self.risk.record_exit(pos, avg_fill_price)
+        await self.risk.record_exit(pos, avg_fill_price, reason)
 
         if self.monitor:
             self.monitor.unsubscribe_token(pos.token_id)
