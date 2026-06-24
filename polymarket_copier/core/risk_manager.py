@@ -374,11 +374,14 @@ class RiskManager:
                 return ExitReason.TRAILING_STOP
 
         # 6 ── Time exit: stale trade with minimal range movement ──────────────
+        # M8: skip the time-exit if the position is currently profitable — a
+        # favourite grinding sideways near a high price IS the thesis; ejecting
+        # it early (paying spread + fee) right before resolution destroys value.
         elapsed_hours = (time.time() - pos.entry_time) / 3_600.0
         if elapsed_hours >= self.cfg.time_exit_hours:
             working_range = max(pos.tp_price - pos.sl_price, _EPSILON)
             range_move = abs(current_price - pos.entry_price) / working_range
-            if range_move < self.cfg.time_exit_min_range_move:
+            if range_move < self.cfg.time_exit_min_range_move and pos.pnl_at(current_price) <= 0:
                 logger.info(
                     "TIME EXIT | id=%s elapsed=%.1fh range_move=%.3f threshold=%.3f",
                     pos.position_id,
@@ -392,11 +395,14 @@ class RiskManager:
 
     # ── Record a closed position ───────────────────────────────────────────────
 
-    async def record_exit(self, pos: Position, exit_price: float) -> float:
+    async def record_exit(self, pos: Position, exit_price: float, reason: Optional["ExitReason"] = None) -> float:
         """
         Call after a position closes (any ExitReason except HOLD).
         Updates bankroll, daily PnL, and releases market exposure.
         Returns realized PnL (negative = loss).
+
+        Pass ``reason`` so _update_cooldown() can filter which exit types count
+        toward the consecutive-loss streak (L5).
         """
         pnl = pos.pnl_at(exit_price)
 
@@ -421,7 +427,7 @@ class RiskManager:
                 self._trader_exposure.get(pos.trader_address, _ZERO) - released_d,
             )
 
-        self._update_cooldown(pnl)
+        self._update_cooldown(pnl, reason)
 
         logger.info(
             "record_exit | id=%s exit=%.4f pnl=%+.4f daily_pnl=%+.4f bankroll=%.2f",
@@ -433,19 +439,26 @@ class RiskManager:
         )
         return pnl
 
-    def _update_cooldown(self, pnl: float) -> None:
+    def _update_cooldown(self, pnl: float, reason: Optional["ExitReason"] = None) -> None:
         """Track consecutive losses and engage a cooldown after a losing streak.
-        Any win resets the streak."""
+
+        L5: only STOP_LOSS and TRAILING_STOP count as "streak losses" — a
+        SOURCE_EXIT or TIME_EXIT slightly negative after fees shouldn't trigger
+        the 60-min halt. Exits with no reason supplied are counted conservatively.
+        Any win (regardless of reason) resets the streak.
+        """
         if pnl < 0:
-            self._consecutive_losses += 1
-            if self.cfg.cooldown_after_losses > 0 and self._consecutive_losses >= self.cfg.cooldown_after_losses:
-                self._cooldown_until = time.time() + self.cfg.cooldown_minutes * 60
-                logger.warning(
-                    "COOLDOWN engaged for %d min after %d consecutive losses",
-                    self.cfg.cooldown_minutes,
-                    self._consecutive_losses,
-                )
-                self._consecutive_losses = 0
+            counts_as_loss = reason is None or reason in (ExitReason.STOP_LOSS, ExitReason.TRAILING_STOP)
+            if counts_as_loss:
+                self._consecutive_losses += 1
+                if self.cfg.cooldown_after_losses > 0 and self._consecutive_losses >= self.cfg.cooldown_after_losses:
+                    self._cooldown_until = time.time() + self.cfg.cooldown_minutes * 60
+                    logger.warning(
+                        "COOLDOWN engaged for %d min after %d consecutive losses",
+                        self.cfg.cooldown_minutes,
+                        self._consecutive_losses,
+                    )
+                    self._consecutive_losses = 0
         else:
             self._consecutive_losses = 0
 

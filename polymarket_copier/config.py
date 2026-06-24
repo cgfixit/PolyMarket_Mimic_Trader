@@ -22,7 +22,9 @@ class ConfigError(ValueError):
 class TraderSelectionConfig(BaseModel):
     min_pnl: float = 10000
     min_win_rate: float = 0.55
-    min_trades: int = 50
+    # M12: raised from 50 to 150 — at n=50 the 95% CI on a 55% win rate spans
+    # ±14%, making winner's curse on top-k selection a near-certainty.
+    min_trades: int = 150
     rebalance_days: int = 7
     half_life_days: float = 14.0
     max_top_traders: int = 5
