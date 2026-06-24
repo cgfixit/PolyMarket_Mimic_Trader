@@ -23,6 +23,10 @@ class TestAppConfig:
         assert config.risk_management.max_market_exposure_pct == 0.08
         assert config.risk_management.resolution_blackout_hours == 24.0
         assert config.copy_trading.size_multiplier == 0.5
+        # L1: adaptive hot-polling defaults. M16: bounded tick-queue default.
+        assert config.hot_poll_interval_seconds == 2.0
+        assert config.hot_poll_window_seconds == 30.0
+        assert config.tick_queue_maxsize == 1000
 
     def test_custom_values(self):
         config = AppConfig(

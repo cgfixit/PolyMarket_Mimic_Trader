@@ -897,7 +897,15 @@ class CopyTrader:
         if exit_price is None:
             exit_price = event.price
 
-        for pos in positions:
+        # M17: close the matching positions CONCURRENTLY rather than serially. Each
+        # _exit_position may retry an order with backoff; run serially, a single slow
+        # or failing exit parked every subsequent position — and, because this runs
+        # inside the detection poll path, the wallet's next poll behind it. gather
+        # overlaps the retries so total latency is the slowest single exit, not their
+        # sum. return_exceptions isolates failures: one position's failed exit no
+        # longer cancels its siblings (the gather never raises, so the caller — and
+        # the poll loop — is not derailed by one bad exit).
+        async def _close(pos):
             logger.info(
                 "Source exit signal: trader %s sold %s — closing copy position %s",
                 event.wallet_address[:10],
@@ -905,6 +913,11 @@ class CopyTrader:
                 pos.position_id,
             )
             await self._exit_position(pos, exit_price, ExitReason.SOURCE_EXIT)
+
+        results = await asyncio.gather(*(_close(pos) for pos in positions), return_exceptions=True)
+        for pos, result in zip(positions, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error("Source exit failed for position %s: %s", pos.position_id, result)
 
     async def check_all_exits(self) -> None:
         """Poll-based exit check fallback (when WS price feed is unavailable).

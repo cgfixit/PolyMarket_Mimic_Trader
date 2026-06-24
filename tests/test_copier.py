@@ -566,6 +566,38 @@ class TestSourceExitMirroring:
         assert await copier.portfolio.position_count() == 1
 
 
+class TestSourceExitConcurrency:
+    """M17: source-exits for a token run concurrently with isolated failures, so a
+    single failing/slow exit neither cancels its siblings nor parks the poll path."""
+
+    @pytest.mark.asyncio
+    async def test_one_failing_exit_does_not_block_others(self, copier):
+        copier.config.copy_trading.mirror_source_exits = True
+        copier.config.copy_trading.max_positions_per_token = 5
+        # Two copies of the same token from the same tracked wallet.
+        await copier.handle_trade_event(buy_event(token="tok-a", wallet="0xwhale"))
+        await copier.handle_trade_event(buy_event(token="tok-a", wallet="0xwhale"))
+        assert await copier.portfolio.position_count() == 2
+
+        attempted = []
+        orig_exit = copier._exit_position
+        calls = {"n": 0}
+
+        async def flaky_exit(pos, price, reason):
+            attempted.append(pos.position_id)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated venue error on first exit")
+            return await orig_exit(pos, price, reason)
+
+        copier._exit_position = flaky_exit
+        # Must not raise despite one exit failing (gather return_exceptions).
+        await copier.handle_trade_event(sell_event(token="tok-a", wallet="0xwhale"))
+        # Both positions were attempted; the non-failing one actually closed.
+        assert len(attempted) == 2
+        assert await copier.portfolio.position_count() == 1
+
+
 # ─── Paper fill price propagated to position entry ────────────────────────────
 
 

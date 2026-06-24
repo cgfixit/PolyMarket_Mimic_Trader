@@ -230,6 +230,20 @@ class AppConfig(BaseModel):
     # in-memory position cache to SQLite.  The final peak is always persisted at
     # position close regardless of this interval.
     peak_persist_interval_seconds: float = 30.0
+    # L1: adaptive ("hot") polling. After a tracked wallet trades, that one wallet
+    # is polled at hot_poll_interval_seconds for hot_poll_window_seconds, decaying
+    # back to the base poll interval. Only the active wallet speeds up (the rest of
+    # the set stays on the base cadence), so detection latency drops on a wallet
+    # that just moved without fanning the whole rate-limit budget. Set the window to
+    # 0 to disable hot polling entirely (every wallet stays on the base interval).
+    hot_poll_interval_seconds: float = 2.0
+    hot_poll_window_seconds: float = 30.0
+    # M16: bounded WebSocket ingest queue. Inbound price frames are parsed off the
+    # socket read and handed to a drop-oldest queue of this size, decoupling the
+    # socket reader from a slow price handler (SQLite write) so one slow tick can't
+    # stall the read loop and back-pressure the connection. 0 disables the queue
+    # (ticks are handled inline on the read loop, the legacy behaviour).
+    tick_queue_maxsize: int = 1000
     max_tracked_traders: int = 5
     # M16: Prometheus metrics. When enabled (and prometheus_client is installed) a
     # scrape endpoint is exposed on metrics_port and gauges are refreshed every
