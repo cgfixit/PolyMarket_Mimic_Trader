@@ -140,6 +140,9 @@ class TestAppConfig:
         # M2: crowding / book-share cap defaults
         assert config.copy_trading.max_book_share_pct == 0.15
         assert config.copy_trading.crowding_discount == 1.0
+        # M10: averaging-down detection defaults (opt-in)
+        assert config.copy_trading.avg_down_detection_enabled is False
+        assert config.copy_trading.avg_down_threshold == 0.05
 
     def test_chunk4_execution_quality_fields(self):
         # Chunk 4 (H17/M1/M5) execution-quality knobs
