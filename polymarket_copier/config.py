@@ -86,6 +86,11 @@ class CopyTradingConfig(BaseModel):
     #    each successive copy. Applies in paper and live (models our own stacking).
     max_book_share_pct: float = 0.15
     crowding_discount: float = 1.0
+    # M10: averaging-down (martingale) detection. Track each whale's per-token entry
+    # VWAP; skip a BUY priced at/under avg_down_threshold below their prior VWAP — a
+    # loser-add they can ride to resolution but our tight stop can't. Opt-in.
+    avg_down_detection_enabled: bool = False
+    avg_down_threshold: float = 0.05
     # Skip trades older than this at detection time — by then the source's alpha
     # has decayed and we'd only be buying into their price impact (adverse
     # selection). 0 disables the gate.

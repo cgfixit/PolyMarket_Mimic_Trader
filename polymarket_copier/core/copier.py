@@ -83,6 +83,12 @@ class CopyTrader:
         # Added to position_count() inside the entry lock so the TOCTOU cap holds even
         # while the lock is not held during the order placement I/O.
         self._pending_entries: int = 0
+        # M10: per-(wallet, token) entry tracking for averaging-down (martingale)
+        # detection. Each value accumulates the whale's cumulative USDC and shares on
+        # that token so we can compute their running entry VWAP. A new BUY materially
+        # below that VWAP is a loser-add we shouldn't copy (they ride to resolution;
+        # our tight stop can't). {(wallet, token): {"usdc": float, "shares": float}}.
+        self._wallet_entries: dict[tuple[str, str], dict[str, float]] = {}
 
     def update_tracker_win_rates(self, rates: dict[str, float]) -> None:
         """Replace the current tracker-win-rate prior with freshly scored data.
@@ -152,6 +158,32 @@ class CopyTrader:
         self._peak_dirty.clear()
         await self.portfolio.batch_update_peak_prices(dirty)
 
+    def _track_and_detect_avg_down(self, event: TradeEvent) -> tuple[bool, float]:
+        """M10: update the whale's per-(wallet, token) entry VWAP with this BUY and
+        report whether it is a materially-lower add (averaging down a loser).
+
+        Returns (is_averaging_down, prior_vwap). The detection compares the new buy
+        against the PRIOR VWAP (before this buy is folded in), so the first buy on a
+        token never trips. History is updated for every observed BUY regardless of
+        whether we copy it, keeping the running VWAP faithful to the whale's book.
+        """
+        key = (event.wallet_address, event.token_id)
+        prior = self._wallet_entries.get(key)
+        prior_vwap = 0.0
+        is_avg_down = False
+        if prior and prior["shares"] > 0:
+            prior_vwap = prior["usdc"] / prior["shares"]
+            thresh = self.config.copy_trading.avg_down_threshold
+            if event.price > 0 and event.price <= prior_vwap * (1.0 - thresh):
+                is_avg_down = True
+
+        if event.price > 0 and event.size_usdc > 0:
+            entry = self._wallet_entries.setdefault(key, {"usdc": 0.0, "shares": 0.0})
+            entry["usdc"] += event.size_usdc
+            entry["shares"] += event.size_usdc / event.price
+
+        return is_avg_down, prior_vwap
+
     def _record_skip(self, reason: str, event: TradeEvent, **detail) -> None:
         """Account a skipped copy: bump the skip counter and emit a structured event.
 
@@ -201,6 +233,28 @@ class CopyTrader:
             else:
                 logger.debug("Skipping non-BUY trade")
             return
+
+        # 2-M10. Averaging-down (martingale) detection. Update the whale's running
+        #   entry VWAP and skip a materially-lower add to a loser: they can ride it to
+        #   resolution, but our tight range-relative stop would be taken out first, so
+        #   copying the add is a structural loser. Opt-in (disabled by default); the
+        #   VWAP is tracked for every BUY so the first add on a token never trips.
+        if self.config.copy_trading.avg_down_detection_enabled:
+            is_avg_down, prior_vwap = self._track_and_detect_avg_down(event)
+            if is_avg_down:
+                logger.info(
+                    "Skip: averaging-down — whale buy @ %.4f <= %.1f%% below prior VWAP %.4f",
+                    event.price,
+                    self.config.copy_trading.avg_down_threshold * 100,
+                    prior_vwap,
+                )
+                self._record_skip(
+                    "averaging_down",
+                    event,
+                    whale_price=round(event.price, 4),
+                    prior_vwap=round(prior_vwap, 4),
+                )
+                return
 
         # 2a. Portfolio circuit breakers (daily-loss limit, post-loss cooldown).
         #     Checked on the ENTRY path so they cannot be bypassed by opening new

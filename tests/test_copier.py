@@ -766,6 +766,63 @@ async def _closed_record(copier, position_id):
     return row[0], row[1], row[2]
 
 
+class TestAveragingDownDetection:
+    """M10: a whale adding to a loser below their prior entry VWAP is a martingale
+    add we shouldn't copy — they ride to resolution, our tight stop can't."""
+
+    @pytest.mark.asyncio
+    async def test_martingale_add_is_skipped(self, copier):
+        copier.config.copy_trading.avg_down_detection_enabled = True
+        copier.config.copy_trading.avg_down_threshold = 0.05
+        # Isolate the M10 gate from the price-deviation gates.
+        copier.config.copy_trading.max_price_deviation = 1.0
+        copier.config.copy_trading.max_favorable_deviation = 1.0
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a", wallet="0xwhale"))
+        assert await copier.portfolio.position_count() == 1
+        # Second buy @0.40 is 20% below the 0.50 VWAP → averaging down → skipped.
+        await copier.handle_trade_event(buy_event(price=0.40, token="tok-a", wallet="0xwhale"))
+        assert await copier.portfolio.position_count() == 1
+
+    @pytest.mark.asyncio
+    async def test_winner_add_above_vwap_is_copied(self, copier):
+        copier.config.copy_trading.avg_down_detection_enabled = True
+        copier.config.copy_trading.max_price_deviation = 1.0
+        copier.config.copy_trading.max_favorable_deviation = 1.0
+        await copier.handle_trade_event(buy_event(price=0.40, token="tok-a", wallet="0xwhale"))
+        # Add @0.60 is above the 0.40 VWAP → not averaging down → copied.
+        await copier.handle_trade_event(buy_event(price=0.60, token="tok-a", wallet="0xwhale"))
+        assert await copier.portfolio.position_count() == 2
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default_copies_the_add(self, copier):
+        # Default avg_down_detection_enabled=False → the loser-add is still copied.
+        copier.config.copy_trading.max_price_deviation = 1.0
+        copier.config.copy_trading.max_favorable_deviation = 1.0
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a", wallet="0xwhale"))
+        await copier.handle_trade_event(buy_event(price=0.40, token="tok-a", wallet="0xwhale"))
+        assert await copier.portfolio.position_count() == 2
+
+    def test_vwap_tracking_first_buy_never_trips(self, copier):
+        copier.config.copy_trading.avg_down_threshold = 0.10
+        down, vwap = copier._track_and_detect_avg_down(buy_event(price=0.50, size=100.0, token="t", wallet="w"))
+        assert down is False and vwap == 0.0
+
+    def test_vwap_threshold_boundary(self, copier):
+        copier.config.copy_trading.avg_down_threshold = 0.10
+        copier._track_and_detect_avg_down(buy_event(price=0.50, size=100.0, token="t", wallet="w"))
+        # 0.45 == 0.50 * (1 - 0.10) → at the threshold → counts as averaging down.
+        down, vwap = copier._track_and_detect_avg_down(buy_event(price=0.45, size=50.0, token="t", wallet="w"))
+        assert down is True
+        assert vwap == pytest.approx(0.50)
+
+    def test_per_token_independent(self, copier):
+        copier.config.copy_trading.avg_down_threshold = 0.05
+        copier._track_and_detect_avg_down(buy_event(price=0.50, size=100.0, token="tok-a", wallet="w"))
+        # A lower buy on a DIFFERENT token is its own first entry → never trips.
+        down, _ = copier._track_and_detect_avg_down(buy_event(price=0.20, size=100.0, token="tok-b", wallet="w"))
+        assert down is False
+
+
 class TestCrowdingAndBookShare:
     """M2: crowding discount sizes down stacked copies; book-share cap (live only)
     bounds a copy to a fraction of resting ask depth."""
