@@ -285,70 +285,84 @@ class TrackerClient:
         self,
         config: Optional[TrackerConfig] = None,
         data_api: str = POLYMARKET_DATA_API,
+        session: Optional[aiohttp.ClientSession] = None,
     ):
         self.cfg = config or TrackerConfig()
         self._data_api = data_api
         self._scorer = TraderScorer(self.cfg)
         self.top_traders: List[ScoredTrader] = []
         self._last_refresh: float = 0.0
+        self._external_session = session is not None
+        self._session = session
 
     async def refresh(self) -> List[ScoredTrader]:
         """
         Full pipeline: leaderboard → per-trader stats → scoring → ranking.
         Caches results in self.top_traders.
+        Uses an external session if provided; otherwise creates a temporary one.
         """
+        if self._session is not None and not self._session.closed:
+            session = self._session
+            # Use external session directly (don't close it)
+            return await self._refresh_with_session(session)
+
+        # Create temporary session; close after use
         async with aiohttp.ClientSession(
             headers={"User-Agent": "polymarket-copier/1.0"},
             timeout=aiohttp.ClientTimeout(total=15),
         ) as session:
-            # H15: fetch both all-time and recent windows; require traders to rank in both
-            all_window, recent_window = await self._fetch_dual_leaderboards(session)
+            return await self._refresh_with_session(session)
 
-            if not all_window or not recent_window:
-                logger.warning("Could not fetch both leaderboard windows.")
-                return []
+    async def _refresh_with_session(self, session: aiohttp.ClientSession) -> List[ScoredTrader]:
+        """Run the refresh pipeline with a given session."""
+        # H15: fetch both all-time and recent windows; require traders to rank in both
+        all_window, recent_window = await self._fetch_dual_leaderboards(session)
 
-            # Build set of traders in both windows (H15: dual-window consistency filter)
-            recent_addrs = {e.get("name", "") for e in recent_window}
-            candidates = [e for e in all_window if e.get("name", "") in recent_addrs]
+        if not all_window or not recent_window:
+            logger.warning("Could not fetch both leaderboard windows.")
+            return []
 
-            if not candidates:
-                logger.warning("No traders found in both all-time and recent windows.")
-                return []
+        # Build set of traders in both windows (H15: dual-window consistency filter)
+        recent_addrs = {e.get("name", "") for e in recent_window}
+        candidates = [e for e in all_window if e.get("name", "") in recent_addrs]
 
+        if not candidates:
+            logger.warning("No traders found in both all-time and recent windows.")
+            return []
+
+        logger.info(
+            "Fetching activity for %d candidates in both windows (all_count=%d, recent_count=%d).",
+            len(candidates),
+            len(all_window),
+            len(recent_window),
+        )
+
+        stats_tasks = [self._build_trader_stats(session, entry) for entry in candidates]
+        all_stats_raw = await asyncio.gather(*stats_tasks, return_exceptions=True)
+
+        all_stats: List[TraderStats] = []
+        for entry, result in zip(candidates, all_stats_raw, strict=True):
+            if isinstance(result, Exception):
+                logger.warning("Stats fetch failed for %s: %s", entry.get("address", "?")[:10], result)
+            elif isinstance(result, TraderStats):
+                all_stats.append(result)
+
+        self.top_traders = self._scorer.score_many(all_stats)
+        self._last_refresh = time.time()
+
+        for t in self.top_traders:
             logger.info(
-                "Fetching activity for %d candidates in both windows (all_count=%d, recent_count=%d).",
-                len(candidates),
-                len(all_window),
-                len(recent_window),
+                "Rank #%d | %s | score=%.4f | expectancy=%.4f | trades=%d | sharpe=%.3f | recency=%.3f",
+                t.rank,
+                t.stats.pseudonym or t.stats.address[:12],
+                t.score,
+                t.stats.expectancy,
+                t.stats.trade_count,
+                t.sharpe_proxy,
+                t.recency_weight,
             )
 
-            stats_tasks = [self._build_trader_stats(session, entry) for entry in candidates]
-            all_stats_raw = await asyncio.gather(*stats_tasks, return_exceptions=True)
-
-            all_stats: List[TraderStats] = []
-            for entry, result in zip(candidates, all_stats_raw, strict=True):
-                if isinstance(result, Exception):
-                    logger.warning("Stats fetch failed for %s: %s", entry.get("address", "?")[:10], result)
-                elif isinstance(result, TraderStats):
-                    all_stats.append(result)
-
-            self.top_traders = self._scorer.score_many(all_stats)
-            self._last_refresh = time.time()
-
-            for t in self.top_traders:
-                logger.info(
-                    "Rank #%d | %s | score=%.4f | expectancy=%.4f | trades=%d | sharpe=%.3f | recency=%.3f",
-                    t.rank,
-                    t.stats.pseudonym or t.stats.address[:12],
-                    t.score,
-                    t.stats.expectancy,
-                    t.stats.trade_count,
-                    t.sharpe_proxy,
-                    t.recency_weight,
-                )
-
-            return self.top_traders
+        return self.top_traders
 
     @property
     def needs_rebalance(self) -> bool:
