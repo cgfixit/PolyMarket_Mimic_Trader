@@ -52,6 +52,19 @@ _EPSILON = 1e-9
 POLYMARKET_DATA_API = "https://data-api.polymarket.com"
 
 
+class _NullAsyncContextManager:
+    """Pass-through async context manager for external sessions (no-op close)."""
+
+    def __init__(self, session: aiohttp.ClientSession):
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *args):
+        pass  # Don't close external sessions
+
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 
@@ -285,22 +298,31 @@ class TrackerClient:
         self,
         config: Optional[TrackerConfig] = None,
         data_api: str = POLYMARKET_DATA_API,
+        session: Optional[aiohttp.ClientSession] = None,
     ):
         self.cfg = config or TrackerConfig()
         self._data_api = data_api
         self._scorer = TraderScorer(self.cfg)
         self.top_traders: List[ScoredTrader] = []
         self._last_refresh: float = 0.0
+        self._external_session = session is not None
+        self._session = session
 
     async def refresh(self) -> List[ScoredTrader]:
         """
         Full pipeline: leaderboard → per-trader stats → scoring → ranking.
         Caches results in self.top_traders.
+        Uses an external session if provided; otherwise creates a temporary one.
         """
-        async with aiohttp.ClientSession(
-            headers={"User-Agent": "polymarket-copier/1.0"},
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as session:
+        if self._session is not None and not self._session.closed:
+            session = self._session
+            session_context = _NullAsyncContextManager(session)
+        else:
+            session_context = aiohttp.ClientSession(
+                headers={"User-Agent": "polymarket-copier/1.0"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            )
+        async with session_context as session:
             # H15: fetch both all-time and recent windows; require traders to rank in both
             all_window, recent_window = await self._fetch_dual_leaderboards(session)
 

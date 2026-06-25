@@ -9,6 +9,8 @@ import sys
 import time
 from typing import Optional
 
+import aiohttp
+
 from polymarket_copier.api.clob_client import ClobClient
 from polymarket_copier.api.gamma_client import GammaClient
 from polymarket_copier.config import ConfigError, load_config
@@ -49,6 +51,14 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
     if config.metrics_enabled:
         metrics.start_metrics_server(config.metrics_port)
 
+    # Shared aiohttp session to avoid duplicate TLS handshakes and connection pool
+    # contention across API clients (DataClient, GammaClient, ClobClient).
+    # A single connector can serve all three endpoints efficiently.
+    shared_session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=15),
+        connector=aiohttp.TCPConnector(limit=50, keepalive_timeout=30),
+    )
+
     risk_cfg = RiskConfig(
         tp_range_fraction=config.risk_management.tp_range_fraction,
         sl_range_fraction=config.risk_management.sl_range_fraction,
@@ -83,7 +93,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
             value=pos.entry_price * pos.size_shares,
         )
 
-    gamma_client = GammaClient()
+    gamma_client = GammaClient(session=shared_session)
     clob_client = ClobClient(config)
     # L3: warm up blocking credential derivation in the thread pool while the
     # tracker fetch is running so the first live order pays no extra latency.
@@ -101,7 +111,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
         rebalance_interval_days=config.trader_selection.rebalance_days,
         recent_window_days=config.trader_selection.recent_window_days,
     )
-    tracker = TrackerClient(config=tracker_cfg)
+    tracker = TrackerClient(config=tracker_cfg, session=shared_session)
     top_traders = await tracker.refresh()
     _update_tracker_metrics(tracker)
 
@@ -258,6 +268,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
         logger.info("\n%s", summary)
         await portfolio.close()
         await gamma_client.close()
+        await shared_session.close()
         logger.info("Bot shut down cleanly")
 
 
