@@ -743,9 +743,11 @@ class CopyTrader:
                 pos.position_id,
             )
             return
-        async with lock:
-            await self._exit_position_locked(pos, price, reason)
-        self._exit_locks.pop(pos.position_id, None)
+        try:
+            async with lock:
+                await self._exit_position_locked(pos, price, reason)
+        finally:
+            self._exit_locks.pop(pos.position_id, None)
 
     async def _exit_position_locked(self, pos, price: float, reason: ExitReason) -> None:
         """Place a SELL order with retry/backoff and close the DB record only after a confirmed fill."""
