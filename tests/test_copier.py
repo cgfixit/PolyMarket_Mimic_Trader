@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 import time
 from unittest.mock import AsyncMock
 
@@ -12,7 +13,7 @@ from polymarket_copier.config import AppConfig
 from polymarket_copier.core.copier import CopyTrader
 from polymarket_copier.core.monitor import TradeEvent, TradeType
 from polymarket_copier.core.portfolio import PortfolioManager
-from polymarket_copier.core.risk_manager import RiskConfig, RiskManager
+from polymarket_copier.core.risk_manager import ExitReason, RiskConfig, RiskManager
 from polymarket_copier.models.types import Market
 
 
@@ -1153,3 +1154,41 @@ class TestConcurrentExitLock:
         # After close the lock entry should have been popped.
         assert await copier.portfolio.position_count() == 0
         assert len(copier._exit_locks) == 0, "_exit_locks not cleaned up after close"
+
+    @pytest.mark.asyncio
+    async def test_exit_lock_cleaned_up_when_exit_raises(self, copier):
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        pos = (await copier.portfolio.get_open_positions())[0]
+
+        async def boom(_pos, _price, _reason):
+            raise RuntimeError("boom")
+
+        original = copier._exit_position_locked
+        copier._exit_position_locked = boom
+        try:
+            with pytest.raises(RuntimeError):
+                await copier._exit_position(pos, 0.75, ExitReason.SOURCE_EXIT)
+        finally:
+            copier._exit_position_locked = original
+
+        assert len(copier._exit_locks) == 0, "_exit_locks leaked on exception path"
+
+    @pytest.mark.asyncio
+    async def test_exit_uses_db_position_size_if_in_memory_mismatch(self, copier):
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        pos = (await copier.portfolio.get_open_positions())[0]
+
+        copier.portfolio.get_position = AsyncMock(
+            return_value=SimpleNamespace(
+                position_id=pos.position_id,
+                size_shares=pos.size_shares + 10.0,
+            )
+        )
+        copier.clob.place_order_with_timeout = AsyncMock(
+            return_value={"status": "LIVE", "filled_size": 0.0, "avg_price": 0.50}
+        )
+
+        await copier._exit_position(pos, 0.75, ExitReason.SOURCE_EXIT)
+        assert len(copier._exit_locks) == 0
+        exit_order = copier.clob.place_order_with_timeout.await_args.args[0]
+        assert exit_order.size_usdc == pytest.approx((pos.size_shares + 10.0) * 0.75)
