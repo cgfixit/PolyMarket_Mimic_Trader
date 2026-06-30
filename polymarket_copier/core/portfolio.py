@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS realized_lots (
     term            TEXT NOT NULL     -- 'short' or 'long'
 );
 CREATE INDEX IF NOT EXISTS idx_realized_lots_disposed ON realized_lots (disposed_at);
+-- Cover realized_lots lookups by position (e.g. audit queries and cascade checks).
+CREATE INDEX IF NOT EXISTS idx_realized_lots_position ON realized_lots (position_id);
 -- Cover get_trader_pnl / get_trader_win_rate (both filter trader_address + status='closed')
 -- and the Kelly sizing queries that fire on every copy decision.
 CREATE INDEX IF NOT EXISTS idx_positions_trader_status ON positions (trader_address, status);
@@ -296,10 +298,21 @@ class PortfolioManager:
 
     async def get_open_unrealized_pnl_conservative(self) -> float:
         """Return sum of (sl_price - entry_price)*size_shares for all open positions.
-        This is always <= 0 and represents the maximum realizable loss if all stops
-        are hit — a conservative mark-to-market for the daily-loss breaker."""
-        positions = await self.get_open_positions()
-        return sum(pos.pnl_at(pos.sl_price) for pos in positions)
+
+        Always <= 0: represents the maximum realizable loss if every open stop
+        is hit simultaneously — used as a conservative mark-to-market by the
+        daily-loss circuit breaker.
+
+        Computed via a single SQL aggregate instead of loading every open
+        Position into Python, which avoids O(n) object construction on the
+        entry-decision hot path when many positions are held.
+        """
+        db = self._require_db()
+        cursor = await db.execute(
+            "SELECT COALESCE(SUM((sl_price - entry_price) * size_shares), 0.0) FROM positions WHERE status = 'open'"
+        )
+        row = await cursor.fetchone()
+        return float(row[0]) if row else 0.0
 
     async def get_trader_pnl(self, trader_address: str) -> float:
         """Return the summed realized PnL of all closed positions copied from a trader."""
