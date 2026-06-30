@@ -653,3 +653,81 @@ class TestPollJitter:
         monitor._poll_wallet = fake_poll
         await monitor._poll_all_wallets(_FakeSessionMonitor([]))
         assert sorted(polled) == ["0xa", "0xb", "0xc"]
+
+
+# ─── Rate-limiter undersizing warning ─────────────────────────────────────────
+
+
+class TestRateLimiterUndersizingWarning:
+    """PR3: __init__ warns when the default 25 rpm budget is too small for the
+    configured wallet count and poll interval, so operators know to pass a
+    larger AsyncLimiter before detection latency silently grows."""
+
+    def test_warns_when_peak_rpm_exceeds_default_budget(self, caplog):
+        # 4 wallets × (60/8) = 30 rpm > 25 default → warning expected.
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="polymarket_copier"):
+            TradeMonitor(
+                tracked_wallets=["0xA", "0xB", "0xC", "0xD"],
+                on_trade=_noop_trade,
+                poll_interval=8.0,
+                # No injected rate_limiter → default 25/min budget applies.
+            )
+        assert any("undersized" in r.message.lower() for r in caplog.records), (
+            "Expected a rate-limiter undersizing warning; got: " + str([r.message for r in caplog.records])
+        )
+
+    def test_no_warning_when_peak_rpm_within_budget(self, caplog):
+        # 2 wallets × (60/8) = 15 rpm < 25 → no warning.
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="polymarket_copier"):
+            TradeMonitor(
+                tracked_wallets=["0xA", "0xB"],
+                on_trade=_noop_trade,
+                poll_interval=8.0,
+            )
+        assert not any("undersized" in r.message.lower() for r in caplog.records)
+
+    def test_no_warning_when_custom_limiter_injected(self, caplog):
+        # An explicit limiter means the operator already calibrated the budget;
+        # the warning must be suppressed entirely.
+        import logging
+        from aiolimiter import AsyncLimiter
+
+        with caplog.at_level(logging.WARNING, logger="polymarket_copier"):
+            TradeMonitor(
+                tracked_wallets=["0xA", "0xB", "0xC", "0xD"],
+                on_trade=_noop_trade,
+                poll_interval=8.0,
+                rate_limiter=AsyncLimiter(5, 60),  # deliberately tiny
+            )
+        assert not any("undersized" in r.message.lower() for r in caplog.records)
+
+    def test_warning_message_contains_suggested_limiter_size(self, caplog):
+        # The warning text should include a concrete AsyncLimiter() suggestion
+        # so operators can copy-paste the fix.
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="polymarket_copier"):
+            TradeMonitor(
+                tracked_wallets=["0xA", "0xB", "0xC", "0xD"],
+                on_trade=_noop_trade,
+                poll_interval=8.0,
+            )
+        warning_text = " ".join(r.message for r in caplog.records if "undersized" in r.message.lower())
+        assert "AsyncLimiter" in warning_text, "Warning should suggest an AsyncLimiter fix"
+
+    def test_no_warning_when_poll_interval_is_zero(self, caplog):
+        # poll_interval=0 disables polling; the formula would divide-by-zero
+        # so the warning block must be skipped entirely.
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="polymarket_copier"):
+            TradeMonitor(
+                tracked_wallets=["0xA", "0xB", "0xC", "0xD"],
+                on_trade=_noop_trade,
+                poll_interval=0,
+            )
+        assert not any("undersized" in r.message.lower() for r in caplog.records)
