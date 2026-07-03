@@ -373,7 +373,9 @@ class TrackerClient:
             logger.warning("No traders found in both all-time and recent windows.")
             return []
 
-        cached_count = sum(1 for e in candidates if not force_refresh and self._is_stats_cached(_leaderboard_address(e)))
+        cached_count = sum(
+            1 for e in candidates if not force_refresh and self._is_stats_cached(_leaderboard_address(e))
+        )
         logger.info(
             "Fetching activity for %d candidates (%d cached, %d to fetch) "
             "in both windows (all_count=%d, recent_count=%d).",
