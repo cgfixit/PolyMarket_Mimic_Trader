@@ -61,8 +61,8 @@ class DataClient:
 
     async def get_leaderboard(self, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch top traders from the leaderboard, ranked by all-time PnL."""
-        params = {"window": "all", "limit": limit}
-        data = await self._get("/leaderboard", params=params)
+        params = {"category": "OVERALL", "timePeriod": "ALL", "orderBy": "PNL", "limit": limit, "offset": 0}
+        data = await self._get("/v1/leaderboard", params=params)
         if isinstance(data, list):
             return data
         return data.get("leaderboard", data.get("data", []))
