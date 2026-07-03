@@ -167,10 +167,15 @@ class ClobClient:
         """M11: live-exec slippage tolerance scaled up by order size (impact-aware)."""
         return self.config.copy_trading.max_live_slippage_pct * self._size_multiplier(size_usdc)
 
-    def _check_liquidity(self, book: dict, price: float, size_usdc: float) -> None:
-        """Ensure the ASK side can fill a BUY at a volume-weighted average price within
-        max_live_slippage_pct of the order price. A market BUY lifts asks, so the ask
-        side — not the bid side — determines fillability.
+    def _check_liquidity(
+        self,
+        book: dict,
+        price: float,
+        size_usdc: float,
+        side: str = "BUY",
+        slippage_cap: Optional[float] = None,
+    ) -> None:
+        """Ensure the relevant book side can fill at a VWAP within the slippage cap.
 
         M11: this is a VWAP-of-needed-depth check, not a naive sum of shares below a
         single max price. The old sum accepted a book with a thin top-of-ask level
@@ -179,14 +184,16 @@ class ClobClient:
         for the needed shares exceeds the cap is intrinsically size-aware: a large
         order's deeper VWAP organically breaches the (base) cap.
         """
-        slippage_cap = self.config.copy_trading.max_live_slippage_pct
-        asks = book.get("asks", [])
-        max_price = price * (1.0 + slippage_cap)
+        if slippage_cap is None:
+            slippage_cap = self.config.copy_trading.max_live_slippage_pct
+        side = side.upper()
+        levels = book.get("asks" if side == "BUY" else "bids", [])
+        limit_price = price * (1.0 + slippage_cap if side == "BUY" else 1.0 - slippage_cap)
         needed_shares = size_usdc / max(price, 1e-6)
 
         filled = 0.0
         cost = 0.0
-        for level in sorted(asks, key=lambda lvl: float(lvl.get("price", 0))):
+        for level in sorted(levels, key=lambda lvl: float(lvl.get("price", 0)), reverse=side == "SELL"):
             level_price = float(level.get("price", 0))
             level_size = float(level.get("size", 0))
             take = min(level_size, needed_shares - filled)
@@ -197,13 +204,13 @@ class ClobClient:
 
         if filled < needed_shares:
             raise InsufficientLiquidityError(
-                f"Insufficient liquidity: need {needed_shares:.2f} shares, ask side only holds {filled:.2f} shares"
+                f"Insufficient liquidity: need {needed_shares:.2f} shares, {side.lower()} side only holds {filled:.2f} shares"
             )
         vwap = cost / filled if filled > 0 else float("inf")
-        if vwap > max_price:
+        if (side == "BUY" and vwap > limit_price) or (side == "SELL" and vwap < limit_price):
             raise InsufficientLiquidityError(
-                f"VWAP {vwap:.4f} for {needed_shares:.2f} shares exceeds "
-                f"{slippage_cap * 100:.1f}% cap above ${price:.4f}"
+                f"VWAP {vwap:.4f} for {needed_shares:.2f} shares breaches "
+                f"{slippage_cap * 100:.1f}% {side.lower()} cap from ${price:.4f}"
             )
 
     async def place_order(self, order: Order, slippage_override: Optional[float] = None) -> dict[str, Any]:
@@ -216,9 +223,12 @@ class ClobClient:
         # The depth check only applies to live trading against a real order book.
         # Paper mode has no real book, so it does not gate — otherwise a synthetic
         # book would systematically skip valid markets across the [0,1] price range.
-        if not self.paper_mode and order.side == "BUY":
+        slippage_cap = (
+            slippage_override if slippage_override is not None else self.config.copy_trading.max_live_slippage_pct
+        )
+        if not self.paper_mode:
             book = await self.get_order_book(order.token_id)
-            self._check_liquidity(book, order.price, order.size_usdc)
+            self._check_liquidity(book, order.price, order.size_usdc, order.side, slippage_cap)
 
         if self.paper_mode:
             # Simulate realistic fill: apply half-spread slippage + taker fee so
