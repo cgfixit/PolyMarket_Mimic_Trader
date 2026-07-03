@@ -931,12 +931,15 @@ class CopyTrader:
         if not positions:
             return
 
+        token_ids = list(dict.fromkeys(p.token_id for p in positions))
         prices = await asyncio.gather(
-            *(self.gamma.get_market_price(p.token_id) for p in positions),
+            *(self.gamma.get_market_price(token_id) for token_id in token_ids),
             return_exceptions=True,
         )
+        price_by_token = dict(zip(token_ids, prices, strict=True))
 
-        for pos, price in zip(positions, prices, strict=True):
+        for pos in positions:
+            price = price_by_token[pos.token_id]
             # gather(return_exceptions=True) yields BaseException on failure; skip
             # those and any None (price unavailable). The isinstance check narrows
             # the type so `price` is a plain float below.

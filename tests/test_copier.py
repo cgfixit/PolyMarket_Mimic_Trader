@@ -384,6 +384,17 @@ class TestHandlePriceTick:
         await copier.handle_price_tick(PriceTick(token_id="tok-a", price=0.20))
         assert await copier.portfolio.position_count() == 0
 
+    @pytest.mark.asyncio
+    async def test_poll_exit_fetches_each_token_once(self, copier, gamma):
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a", wallet="0xwhale"))
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a", wallet="0xother"))
+        gamma.get_market_price = AsyncMock(return_value=0.72)
+
+        await copier.check_all_exits()
+
+        gamma.get_market_price.assert_awaited_once_with("tok-a")
+        assert await copier.portfolio.position_count() == 0
+
 
 class TestStalenessGate:
     @pytest.mark.asyncio
