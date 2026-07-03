@@ -18,7 +18,8 @@ pytest -v -m "not integration"
 pytest tests/test_risk_manager.py -v
 
 # Lint
-ruff check .
+powershell -File scripts/check-lint.ps1
+powershell -File scripts/check-lint.ps1 -Fix
 
 # Run the bot (paper mode is default)
 python -m polymarket_copier.main --mode paper --config config.yaml

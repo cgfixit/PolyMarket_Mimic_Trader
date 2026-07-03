@@ -16,7 +16,8 @@ Testing and checks:
 - `pip install -r requirements.txt`
 - `pytest -v`
 - `pytest -v -m "not integration"`
-- `ruff check .`
+- `powershell -File scripts/check-lint.ps1`
+- `powershell -File scripts/check-lint.ps1 -Fix`
 - `python -m mypy polymarket_copier`
 
 Baseline architecture from initial inspection:
