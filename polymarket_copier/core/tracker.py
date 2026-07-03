@@ -54,6 +54,30 @@ _EPSILON = 1e-9
 POLYMARKET_DATA_API = "https://data-api.polymarket.com"
 
 
+def _leaderboard_address(entry: dict) -> str:
+    """Return the wallet field from old and current leaderboard schemas."""
+    return normalize_address(entry.get("proxyWallet") or entry.get("name", "") or entry.get("address", ""))
+
+
+def _leaderboard_time_period(window: str) -> str:
+    """Map repo windows to Polymarket's current DAY/WEEK/MONTH/ALL enum."""
+    window = str(window).strip().lower()
+    if window in {"all", "all_time", "overall"}:
+        return "ALL"
+    if window in {"day", "week", "month"}:
+        return window.upper()
+    if window.endswith("d"):
+        try:
+            days = int(window[:-1])
+        except ValueError:
+            return "MONTH"
+        if days <= 1:
+            return "DAY"
+        if days <= 7:
+            return "WEEK"
+    return "MONTH"
+
+
 # ─── Config ───────────────────────────────────────────────────────────────────
 
 
@@ -342,14 +366,16 @@ class TrackerClient:
             return []
 
         # Build set of traders in both windows (H15: dual-window consistency filter)
-        recent_addrs = {normalize_address(e.get("name", "")) for e in recent_window}
-        candidates = [e for e in all_window if normalize_address(e.get("name", "")) in recent_addrs]
+        recent_addrs = {_leaderboard_address(e) for e in recent_window}
+        candidates = [e for e in all_window if _leaderboard_address(e) in recent_addrs]
 
         if not candidates:
             logger.warning("No traders found in both all-time and recent windows.")
             return []
 
-        cached_count = sum(1 for e in candidates if not force_refresh and self._is_stats_cached(e.get("name", "")))
+        cached_count = sum(
+            1 for e in candidates if not force_refresh and self._is_stats_cached(_leaderboard_address(e))
+        )
         logger.info(
             "Fetching activity for %d candidates (%d cached, %d to fetch) "
             "in both windows (all_count=%d, recent_count=%d).",
@@ -366,7 +392,7 @@ class TrackerClient:
         all_stats: List[TraderStats] = []
         for entry, result in zip(candidates, all_stats_raw, strict=True):
             if isinstance(result, Exception):
-                logger.warning("Stats fetch failed for %s: %s", entry.get("address", "?")[:10], result)
+                logger.warning("Stats fetch failed for %s: %s", _leaderboard_address(entry)[:10], result)
             elif isinstance(result, TraderStats):
                 all_stats.append(result)
 
@@ -438,8 +464,14 @@ class TrackerClient:
 
     async def _fetch_leaderboard_window(self, session: aiohttp.ClientSession, window: str) -> List[dict]:
         """Fetch leaderboard for a specific time window (e.g., 'all', '30d')."""
-        url = f"{self._data_api}/leaderboard"
-        params: Dict[str, Any] = {"window": window, "limit": self.cfg.leaderboard_limit}
+        url = f"{self._data_api}/v1/leaderboard"
+        params: Dict[str, Any] = {
+            "category": "OVERALL",
+            "timePeriod": _leaderboard_time_period(window),
+            "orderBy": "PNL",
+            "limit": self.cfg.leaderboard_limit,
+            "offset": 0,
+        }
 
         try:
             async with session.get(url, params=params) as resp:
@@ -452,8 +484,9 @@ class TrackerClient:
                     )
                     return []
                 data = await resp.json()
+                rows = data if isinstance(data, list) else data.get("leaderboard", data.get("data", []))
                 # Pre-filter by minimum PnL before paying for per-trader API calls
-                return [entry for entry in data if float(entry.get("pnl", 0)) >= self.cfg.min_total_pnl]
+                return [entry for entry in rows if float(entry.get("pnl", 0) or 0) >= self.cfg.min_total_pnl]
         except Exception as exc:
             logger.warning("Leaderboard fetch (window=%s) failed: %s", window, exc)
             return []
@@ -471,8 +504,8 @@ class TrackerClient:
         Returns a cached result if the cache is valid and force_refresh is False,
         avoiding redundant /activity API calls on the rebalance cycle.
         """
-        address = normalize_address(leaderboard_entry.get("name", ""))  # "name" = wallet address
-        pseudonym = leaderboard_entry.get("pseudonym", "")
+        address = _leaderboard_address(leaderboard_entry)
+        pseudonym = leaderboard_entry.get("userName", leaderboard_entry.get("pseudonym", ""))
         total_pnl = float(leaderboard_entry.get("pnl", 0))
 
         if not address:
@@ -487,7 +520,7 @@ class TrackerClient:
         trades = await self._fetch_activity(session, address)
 
         if not trades:
-            trade_count = int(leaderboard_entry.get("tradesCount", 0))
+            trade_count = int(leaderboard_entry.get("tradesCount", leaderboard_entry.get("tradeCount", 0)) or 0)
             stats = TraderStats(
                 address=address,
                 pseudonym=pseudonym,

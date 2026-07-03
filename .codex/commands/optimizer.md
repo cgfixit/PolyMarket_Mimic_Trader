@@ -4,7 +4,7 @@ Use this repo-local workflow when the user asks to optimize, audit, harden, or r
 
 Scope:
 
-- `ruff check .`
+- `powershell -File scripts/check-lint.ps1`
 - `python -m mypy polymarket_copier`
 - `pytest -v --tb=short`
 - targeted grep for TODO/FIXME, bare `except`, silent HTTP failures, async misuse, and obvious performance leaks

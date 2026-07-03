@@ -133,6 +133,25 @@ class TestHandleTradeEvent:
         await copier.handle_trade_event(buy_event())
         assert await copier.portfolio.position_count() == 0
 
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("active", False),
+            ("closed", True),
+            ("archived", True),
+            ("restricted", True),
+            ("accepting_orders", False),
+            ("enable_order_book", False),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_untradable_market_skip(self, copier, gamma, field, value):
+        market = Market(condition_id="mkt-a", volume_24h=50_000, token_id_yes="tok-a", token_id_no="tok-b")
+        setattr(market, field, value)
+        gamma.get_market = AsyncMock(return_value=market)
+        await copier.handle_trade_event(buy_event(market="mkt-a", token="tok-a"))
+        assert await copier.portfolio.position_count() == 0
+
     @pytest.mark.asyncio
     async def test_max_concurrent_positions(self, copier):
         copier.config.copy_trading.max_concurrent_positions = 1

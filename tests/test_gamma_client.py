@@ -124,11 +124,21 @@ class TestParseMarket:
                 {"outcome": "No", "token_id": "no-tok"},
             ],
             "volume24hr": 5000,
+            "active": "true",
+            "closed": "false",
+            "archived": False,
+            "restricted": False,
+            "acceptingOrders": True,
+            "enableOrderBook": True,
         }
         market = _parse_market(raw)
         assert market.token_id_yes == "yes-tok"
         assert market.token_id_no == "no-tok"
         assert market.volume_24h == 5000
+        assert market.active is True
+        assert market.closed is False
+        assert market.accepting_orders is True
+        assert market.enable_order_book is True
 
     def test_handles_missing_volume(self):
         market = _parse_market({"condition_id": "c1"})

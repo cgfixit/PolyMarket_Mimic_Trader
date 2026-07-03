@@ -243,6 +243,26 @@ class CopyTrader:
             logger.info("Skip: market data unavailable for %s (fail-closed)", event.market_id[:10])
             self._record_skip("missing_market_data", event)
             return
+        if market and (
+            not market.active
+            or market.closed
+            or market.archived
+            or market.restricted
+            or not market.accepting_orders
+            or not market.enable_order_book
+        ):
+            logger.info("Skip: market %s is not tradable", event.market_id[:10])
+            self._record_skip(
+                "market_not_tradable",
+                event,
+                active=market.active,
+                closed=market.closed,
+                archived=market.archived,
+                restricted=market.restricted,
+                accepting_orders=market.accepting_orders,
+                enable_order_book=market.enable_order_book,
+            )
+            return
         if market and market.resolve_time:
             blackout_hours = self.config.risk_management.resolution_blackout_hours
             hours_to_resolve = (market.resolve_time.timestamp() - time.time()) / 3600

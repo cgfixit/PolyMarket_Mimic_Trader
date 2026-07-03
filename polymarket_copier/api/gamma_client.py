@@ -136,6 +136,14 @@ def _parse_resolve_time(raw: dict) -> Optional[datetime]:
     return None
 
 
+def _as_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
+
+
 def _parse_market(raw: dict) -> Market:
     tokens = raw.get("tokens", [])
     token_yes = ""
@@ -155,5 +163,10 @@ def _parse_market(raw: dict) -> Market:
         token_id_no=token_no or str(raw.get("token_id_no", "")),
         resolve_time=_parse_resolve_time(raw),
         volume_24h=float(raw.get("volume24hr", raw.get("volume_24h", 0)) or 0),
-        active=bool(raw.get("active", True)),
+        active=_as_bool(raw.get("active"), True),
+        closed=_as_bool(raw.get("closed"), False),
+        archived=_as_bool(raw.get("archived"), False),
+        restricted=_as_bool(raw.get("restricted"), False),
+        accepting_orders=_as_bool(raw.get("acceptingOrders", raw.get("accepting_orders")), True),
+        enable_order_book=_as_bool(raw.get("enableOrderBook", raw.get("enable_order_book")), True),
     )

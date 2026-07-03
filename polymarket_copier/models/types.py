@@ -18,6 +18,11 @@ class Market(BaseModel):
     resolve_time: Optional[datetime] = None
     volume_24h: float = 0.0
     active: bool = True
+    closed: bool = False
+    archived: bool = False
+    restricted: bool = False
+    accepting_orders: bool = True
+    enable_order_book: bool = True
 
 
 class Order(BaseModel):

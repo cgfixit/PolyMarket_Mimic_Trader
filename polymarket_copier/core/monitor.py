@@ -3,7 +3,7 @@ core/monitor.py — WebSocket-first trade monitor with polling fallback.
 
 ARCHITECTURE DECISION — WHY TWO PATHS
 --------------------------------------
-The Polymarket CLOB WebSocket (wss://ws-subscriptions-clob.polymarket.com/ws/)
+The Polymarket CLOB WebSocket (wss://ws-subscriptions-clob.polymarket.com/ws/market)
 publishes real-time market events (price changes, order book updates) for
 subscribed token IDs. However, the public market channel does NOT filter events
 by wallet address — it broadcasts all price/trade activity for a market.
@@ -29,6 +29,7 @@ TRADE EVENT FLOW
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 import random
@@ -54,10 +55,10 @@ logger = logging.getLogger(__name__)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-POLYMARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/"
+POLYMARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 POLYMARKET_DATA_API = "https://data-api.polymarket.com"
 
-_WS_PING_INTERVAL = 15  # seconds between WebSocket keep-alive pings
+_WS_PING_INTERVAL = 10  # seconds between WebSocket keep-alive pings
 _WS_RECONNECT_DELAY = 5  # seconds before reconnecting after WS drop
 _POLL_INTERVAL_SEC = 8  # seconds between wallet activity polls
 _MAX_TRADES_PER_POLL = 50  # number of recent trades to fetch per poll cycle
@@ -343,28 +344,38 @@ class TradeMonitor:
             self._ws_healthy = True
             logger.info("WebSocket connected: %s", self._ws_url)
 
-            if self._subscribed_tokens:
-                await self._ws_send_subscription(ws, list(self._subscribed_tokens))
+            heartbeat = asyncio.create_task(self._ws_heartbeat(ws))
+            try:
+                if self._subscribed_tokens:
+                    await self._ws_send_subscription(ws, list(self._subscribed_tokens))
 
-            async for raw_msg in ws:
-                if self._stop_event.is_set():
-                    break
+                async for raw_msg in ws:
+                    if self._stop_event.is_set():
+                        break
 
-                await self._maybe_update_subscription(ws)
+                    await self._maybe_update_subscription(ws)
 
-                try:
-                    msg_str = raw_msg.decode() if isinstance(raw_msg, bytes) else raw_msg
-                    await self._handle_ws_message(msg_str)
-                except Exception as exc:
-                    logger.warning("WS message parse error: %s | raw=%r", exc, raw_msg[:200])
+                    try:
+                        msg_str = raw_msg.decode() if isinstance(raw_msg, bytes) else raw_msg
+                        await self._handle_ws_message(msg_str)
+                    except Exception as exc:
+                        logger.warning("WS message parse error: %s | raw=%r", exc, raw_msg[:200])
+            finally:
+                heartbeat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat
+
+    async def _ws_heartbeat(self, ws) -> None:
+        """Send Polymarket's application-level WS ping payload."""
+        while not self._stop_event.is_set():
+            await asyncio.sleep(_WS_PING_INTERVAL)
+            await ws.send("{}")
 
     async def _ws_send_subscription(self, ws, token_ids: List[str]) -> None:
         """Send a Market subscription message to the Polymarket CLOB WebSocket."""
         sub_msg = json.dumps(
             {
-                "auth": {},  # No auth needed for public market data
-                "type": "Market",
-                "markets": [],
+                "type": "market",
                 "assets_ids": token_ids,
             }
         )

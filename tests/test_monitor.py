@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import MagicMock
 
@@ -135,8 +136,6 @@ class TestTradeMonitor:
             on_price=on_price,
         )
         monitor.subscribe_token("tok-a")
-        import json
-
         raw = json.dumps([{"event_type": "price_change", "asset_id": "tok-a", "price": "0.55"}])
         await monitor._handle_ws_message(raw)
         assert len(ticks) == 1
@@ -155,8 +154,6 @@ class TestTradeMonitor:
             on_trade=_noop_trade,
             on_price=on_price,
         )
-        import json
-
         raw = json.dumps([{"event_type": "price_change", "asset_id": "other-tok", "price": "0.55"}])
         await monitor._handle_ws_message(raw)
         assert len(ticks) == 0
@@ -174,11 +171,21 @@ class TestTradeMonitor:
             on_price=on_price,
         )
         monitor.subscribe_token("tok-a")
-        import json
-
         raw = json.dumps([{"event_type": "price_change", "asset_id": "tok-a", "price": "1.5"}])
         await monitor._handle_ws_message(raw)
         assert len(ticks) == 0
+
+    @pytest.mark.asyncio
+    async def test_ws_subscription_uses_current_market_schema(self):
+        sent = []
+
+        class FakeWS:
+            async def send(self, msg):
+                sent.append(json.loads(msg))
+
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
+        await monitor._ws_send_subscription(FakeWS(), ["tok-a"])
+        assert sent == [{"type": "market", "assets_ids": ["tok-a"]}]
 
 
 class TestColdStartPriming:

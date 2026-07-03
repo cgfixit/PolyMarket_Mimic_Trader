@@ -25,7 +25,8 @@ Frequently used commands:
 - `pip install -r requirements.txt`
 - `pytest -v`
 - `pytest -v -m "not integration"`
-- `ruff check .`
+- `powershell -File scripts/check-lint.ps1`
+- `powershell -File scripts/check-lint.ps1 -Fix`
 - `python -m mypy polymarket_copier`
 - `python -m polymarket_copier.main --mode paper --config config.yaml`
 

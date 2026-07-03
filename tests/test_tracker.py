@@ -402,10 +402,10 @@ class TestRefreshPipeline:
     async def test_refresh_returns_ranked_traders_from_dual_windows(self):
         client = TrackerClient(config=TrackerConfig(max_top_traders=5))
         all_window = [
-            {"name": "0xA", "pnl": 50000, "pseudonym": "A"},
-            {"name": "0xB", "pnl": 40000, "pseudonym": "B"},
+            {"proxyWallet": "0xA", "pnl": 50000, "userName": "A"},
+            {"proxyWallet": "0xB", "pnl": 40000, "userName": "B"},
         ]
-        recent_window = [{"name": "0xA", "pnl": 30000}]  # only 0xA in BOTH windows
+        recent_window = [{"proxyWallet": "0xA", "pnl": 30000}]  # only 0xA in BOTH windows
         with (
             patch.object(
                 client,
@@ -431,7 +431,7 @@ class TestRefreshPipeline:
         with patch.object(
             client,
             "_fetch_dual_leaderboards",
-            new=AsyncMock(return_value=([], [{"name": "0xA"}])),
+            new=AsyncMock(return_value=([], [{"proxyWallet": "0xA"}])),
         ):
             assert await client.refresh() == []
 
@@ -443,8 +443,8 @@ class TestRefreshPipeline:
             "_fetch_dual_leaderboards",
             new=AsyncMock(
                 return_value=(
-                    [{"name": "0xA", "pnl": 50000}],
-                    [{"name": "0xZ", "pnl": 50000}],
+                    [{"proxyWallet": "0xA", "pnl": 50000}],
+                    [{"proxyWallet": "0xZ", "pnl": 50000}],
                 )
             ),
         ):
@@ -583,3 +583,15 @@ class TestStatsCache:
         assert result is not old_stats
         # Cache updated with new stats
         assert client._stats_cache["0xa"][0] is result
+
+    @pytest.mark.asyncio
+    async def test_build_stats_accepts_current_leaderboard_schema(self):
+        client = TrackerClient(config=TrackerConfig(activity_cache_ttl_hours=0.0))
+        entry = {"proxyWallet": "0xA", "pnl": 50000, "userName": "Alice"}
+        with patch.object(client, "_fetch_activity", new=AsyncMock(return_value=[])):
+            result = await client._build_trader_stats(session=AsyncMock(), leaderboard_entry=entry)
+
+        assert result is not None
+        assert result.address == "0xa"
+        assert result.pseudonym == "Alice"
+        assert result.total_pnl == 50000

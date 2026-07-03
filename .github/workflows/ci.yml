@@ -92,11 +92,9 @@ jobs:
       - name: Install Ruff
         run: pip install ruff
 
-      - name: Check lint (ruff check)
-        run: ruff check .
-
-      - name: Check formatting (ruff format --check)
-        run: ruff format --check .
+      - name: Run lint gate
+        shell: pwsh
+        run: ./scripts/check-lint.ps1
 
   # ── Static type checking ─────────────────────────────────────────────────────
   type-check:
