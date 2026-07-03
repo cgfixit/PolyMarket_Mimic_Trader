@@ -46,6 +46,16 @@ def buy_order(price=0.50, size_usdc=100.0) -> Order:
     )
 
 
+def sell_order(price=0.50, size_usdc=100.0) -> Order:
+    return Order(
+        market_id="mkt-a",
+        token_id="tok-a",
+        side="SELL",
+        price=price,
+        size_usdc=size_usdc,
+    )
+
+
 class TestPaperMode:
     @pytest.mark.asyncio
     async def test_place_order_returns_paper_status(self, paper_client):
@@ -102,6 +112,15 @@ class TestLiquidityGuard:
         with pytest.raises(InsufficientLiquidityError):
             paper_client._check_liquidity({}, price=0.50, size_usdc=1.0)
 
+    def test_sell_uses_bid_side(self, paper_client):
+        book = {"bids": [{"price": "0.50", "size": "1000"}], "asks": []}
+        paper_client._check_liquidity(book, price=0.50, size_usdc=100.0, side="SELL")
+
+    def test_sell_rejects_low_vwap(self, paper_client):
+        book = {"bids": [{"price": "0.45", "size": "1000"}], "asks": [{"price": "0.50", "size": "1000"}]}
+        with pytest.raises(InsufficientLiquidityError, match="sell cap"):
+            paper_client._check_liquidity(book, price=0.50, size_usdc=100.0, side="SELL")
+
 
 class TestLiveModeGuards:
     def test_init_live_client_without_key_raises(self, live_client):
@@ -119,6 +138,15 @@ class TestLiveModeGuards:
         live_client.get_order_book = thin_book
         with pytest.raises(InsufficientLiquidityError):
             await live_client.place_order(buy_order(size_usdc=100.0))
+
+    @pytest.mark.asyncio
+    async def test_live_sell_thin_bid_raises_before_auth(self, live_client):
+        async def thin_book(_token_id):
+            return {"asks": [{"price": "0.50", "size": "1000"}], "bids": []}
+
+        live_client.get_order_book = thin_book
+        with pytest.raises(InsufficientLiquidityError, match="sell side"):
+            await live_client.place_order(sell_order(size_usdc=100.0))
 
 
 # ─── Realistic paper fill price ───────────────────────────────────────────────
@@ -220,6 +248,12 @@ class TestLiveSlippageCap:
         book = {"asks": [{"price": "0.50", "size": "1"}]}  # only 1 share, need 200
         with pytest.raises(InsufficientLiquidityError, match="only holds"):
             paper_client._check_liquidity(book, price=0.50, size_usdc=100.0)
+
+    def test_slippage_override_widens_gate(self, paper_client):
+        book = {"asks": [{"price": "0.51", "size": "500"}]}
+        with pytest.raises(InsufficientLiquidityError):
+            paper_client._check_liquidity(book, price=0.50, size_usdc=100.0)
+        paper_client._check_liquidity(book, price=0.50, size_usdc=100.0, slippage_cap=0.02)
 
     def test_vwap_rejects_thin_top_deep_book(self, paper_client):
         """M11: a thin top-of-ask inside the cap plus the bulk of depth ABOVE it must
