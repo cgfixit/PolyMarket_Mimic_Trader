@@ -6,7 +6,7 @@ A Python copy-trading bot that monitors the most successful traders on [Polymark
 
 ## Why This Exists
 
-Only 7.6% of Polymarket wallets are profitable, but the top performers consistently outperform by applying disciplined strategies across many markets. This bot identifies those traders, monitors their activity, and mirrors their entries with tighter risk controls so you capture the same edge with less downside exposure.
+Only ~7.6% of Polymarket wallets are profitable, and academic research (Gómez-Cram, Guo, Jensen & Kung, SSRN #6617059, Apr 2026) finds that the ~3% of accounts with genuine, persistent skill earn it largely by reacting to public news *faster* than the market — an edge tied to speed of execution, not just strategy, that a bot mirroring trades seconds later is not guaranteed to inherit. This bot identifies historically strong traders via risk-adjusted scoring (not raw PnL) and mirrors their entries with tighter, range-relative risk controls, but treat leaderboard rank as a *candidate filter*, not a proven, copyable edge — validate with paper mode and your own measurement before risking real capital. See `PROFITABILITY_ANALYSIS_JUNE_2026.md` for a full analysis.
 
 ## How It Works
 
@@ -20,7 +20,8 @@ Only 7.6% of Polymarket wallets are profitable, but the top performers consisten
               WebSocket feeds real-time prices for open positions
               Per-wallet activity cache reduces redundant API calls
 
-3. COPY       Mirror entries sized by fractional Kelly criterion
+3. COPY       Mirror entries at a flat 50% of source size, capped at 2%
+              of bankroll (Kelly-capable, but disabled by default — see below)
               Skip if price moved >2%, volume <$5K, or market resolves <24h
               Fee + spread deducted from edge before sizing
 
@@ -53,9 +54,9 @@ Traders are ranked by `Sharpe_proxy × Consistency × Recency_weight`, not raw P
 - Traders must rank in both the all-time and trailing 30-day leaderboard windows
 - Expectancy / profit-factor weighted instead of raw win rate to avoid favorite-buyer bias
 
-### Fractional Kelly Sizing
+### Fractional Kelly Sizing (opt-in, off by default)
 
-Position sizes are computed via fractional Kelly criterion rather than a flat multiplier. The Kelly probability input is derived from the trader's demonstrated mean ROI (not raw win rate), and activates only once the trader has ≥50 closed trades. A tracker-derived prior is used during warm-up with time-decay weighting so stale leaderboard data contributes less.
+Position sizes default to a flat 50% of source size (`size_multiplier`), capped at 2% of bankroll per trade. Setting `kelly_enabled: true` in `config.yaml` switches sizing to a fractional Kelly criterion instead of the flat multiplier. The Kelly probability input is derived from the trader's demonstrated mean ROI (not raw win rate), and activates only once the trader has ≥50 closed trades — until then it falls back to the flat multiplier. A tracker-derived prior is used during warm-up with time-decay weighting so stale leaderboard data contributes less. Kelly is off by default because its edge estimate inherits the same win-rate/ROI biases the tracker's stats have not yet been de-biased for (see `PROFITABILITY_ANALYSIS_JUNE_2026.md` §4.2–4.3); the 2% hard cap bounds the damage either way.
 
 ### WebSocket + REST Hybrid Monitor
 
@@ -127,7 +128,7 @@ All trading parameters are in `config.yaml`. The defaults are conservative:
 | `max_trade_pct` | 0.02 | Max 2% of bankroll per trade |
 | `tp_range_fraction` | 0.40 | Take profit at 40% of remaining upside |
 | `sl_range_fraction` | 0.25 | Stop loss at 25% of remaining downside |
-| `trailing_stop_fraction` | 0.15 | Trail 15% below peak-to-SL gap |
+| `trailing_stop_fraction` | 0.40 | Trail 40% below peak-to-SL gap |
 | `max_market_exposure_pct` | 0.08 | Max 8% of bankroll in any single market |
 | `max_trader_allocation` | 0.05 | Max 5% of bankroll copied from any single trader |
 | `daily_loss_limit_pct` | 0.03 | Halt all trading after 3% daily loss (resets at UTC midnight) |

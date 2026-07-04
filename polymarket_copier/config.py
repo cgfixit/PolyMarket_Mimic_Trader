@@ -240,6 +240,11 @@ class AppConfig(BaseModel):
     api_key: str = ""
     api_secret: str = ""
     api_passphrase: str = ""
+    # Signature type for py-clob-client order signing: 0 = EOA (default, a plain
+    # wallet signs directly), 1 = POLY_PROXY, 2 = GNOSIS_SAFE, 3 = POLY_1271
+    # (deposit wallet — funder must then hold the funds, private_key only signs).
+    signature_type: int = 0
+    funder: str = ""
     bankroll: float = 500
     # H9: seconds before the watchdog fires a stall alert; 0 = auto (3× poll_interval)
     detection_stall_alert_seconds: float = 0.0
@@ -268,6 +273,13 @@ def load_config(
     config.api_key = os.getenv("POLY_API_KEY", "")
     config.api_secret = os.getenv("POLY_API_SECRET", "")
     config.api_passphrase = os.getenv("POLY_API_PASSPHRASE", "")
+    config.funder = os.getenv("POLY_FUNDER", "")
+    signature_type_str = os.getenv("POLY_SIGNATURE_TYPE", "")
+    if signature_type_str:
+        try:
+            config.signature_type = int(signature_type_str)
+        except ValueError:
+            raise ConfigError(f"POLY_SIGNATURE_TYPE must be an integer, got: {signature_type_str!r}") from None
 
     bankroll_str = os.getenv("BANKROLL", "")
     if bankroll_str:
@@ -281,5 +293,8 @@ def load_config(
 
     if config.mode == "live" and not config.private_key:
         raise ConfigError("POLY_PRIVATE_KEY required for live mode")
+
+    if config.mode == "live" and config.signature_type == 3 and not config.funder:
+        raise ConfigError("POLY_FUNDER required when POLY_SIGNATURE_TYPE=3 (deposit-wallet signing)")
 
     return config

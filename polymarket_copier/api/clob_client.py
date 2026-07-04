@@ -114,6 +114,8 @@ class ClobClient:
                     CLOB_BASE,
                     key=self.config.private_key,
                     chain_id=CHAIN_ID,
+                    signature_type=self.config.signature_type,
+                    funder=self.config.funder or None,
                 )
                 if self.config.api_key and self.config.api_secret:
                     self._client.set_api_creds(
