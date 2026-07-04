@@ -42,6 +42,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 import aiohttp
 from aiolimiter import AsyncLimiter
 
+from polymarket_copier.utils.activity import activity_side
+
 # websockets is an optional hard-dep; linter-safe import with graceful fallback
 try:
     import websockets
@@ -585,7 +587,7 @@ def _parse_trade_event(wallet: str, raw: dict) -> Optional[TradeEvent]:
         trade_id = str(raw.get("id") or raw.get("transactionHash", ""))
         market_id = str(raw.get("market", raw.get("conditionId", "")))
         token_id = str(raw.get("asset", raw.get("tokenId", "")))
-        side_raw = str(raw.get("side", "")).upper()
+        side_raw = activity_side(raw)
         price = float(raw.get("price", 0))
         size = float(raw.get("size", raw.get("usdcSize", 0)))
         outcome = raw.get("outcomeLabel", "YES" if raw.get("outcomeIndex", 0) == 0 else "NO")
@@ -603,6 +605,8 @@ def _parse_trade_event(wallet: str, raw: dict) -> Optional[TradeEvent]:
         if not market_id or not token_id or price <= 0 or size <= 0:
             return None
 
+        if side_raw not in {"BUY", "SELL"}:
+            return None
         trade_type = TradeType.BUY if side_raw == "BUY" else TradeType.SELL
 
         return TradeEvent(
