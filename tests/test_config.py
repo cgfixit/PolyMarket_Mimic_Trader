@@ -231,7 +231,9 @@ class TestShippedConfigMatchesCodeDefaults:
         return load_config(config_path="config.yaml")
 
     def test_trailing_stop_fraction_matches_code_default(self, shipped_config):
-        assert shipped_config.risk_management.trailing_stop_fraction == AppConfig().risk_management.trailing_stop_fraction
+        assert (
+            shipped_config.risk_management.trailing_stop_fraction == AppConfig().risk_management.trailing_stop_fraction
+        )
 
     def test_half_life_days_matches_code_default(self, shipped_config):
         assert shipped_config.trader_selection.half_life_days == AppConfig().trader_selection.half_life_days
