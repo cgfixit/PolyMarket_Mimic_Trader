@@ -98,7 +98,11 @@ class CopyTradingConfig(BaseModel):
     # Paper-mode fill simulation: apply half-spread slippage + taker fee so
     # paper PnL reflects live execution costs rather than zero-cost fills.
     paper_fill_slippage_pct: float = 0.005  # ~0.5% half-spread
-    paper_taker_fee_pct: float = 0.02  # Polymarket CLOB taker fee
+    # Canonical key: taker fee is a RATE, while actual paid fee is price-shaped:
+    # fee_per_share = fee_rate * price * (1 - price). The legacy `_pct` alias is
+    # still accepted so existing configs and tests keep working.
+    paper_taker_fee_rate: float = 0.02
+    paper_taker_fee_pct: Optional[float] = None
     # Live-mode slippage cap: reject a BUY if no ask depth exists within this
     # fraction of the requested price. Prevents inadvertently paying far above
     # the quoted price when the order book is thin or the market moves fast.
@@ -170,6 +174,10 @@ class CopyTradingConfig(BaseModel):
                 f"(got max_live={self.max_live_slippage_pct:.4f} < paper={self.paper_fill_slippage_pct:.4f})"
             )
         return self
+
+    def taker_fee_rate(self) -> float:
+        """Return the effective taker fee rate, honoring the legacy alias if set."""
+        return self.paper_taker_fee_pct if self.paper_taker_fee_pct is not None else self.paper_taker_fee_rate
 
 
 class RiskManagementConfig(BaseModel):
