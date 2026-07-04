@@ -19,3 +19,4 @@ Notes:
 
 - This mirrors the existing `.claude/commands/optimizer.md` workflow so Codex and Claude use the same audit shape.
 - For over-engineering cleanup, pair this with the Ponytail skill instead of inventing new abstractions.
+- When Codex runs this after a Claude-style pass, bias toward different findings: measurable import/runtime cost, repeated local I/O, shared choke points, CI/runtime drift, and places where deleting code is better than refactoring it.
