@@ -620,9 +620,9 @@ class TestPaperFillPriceInPosition:
         await copier.handle_trade_event(buy_event(price=0.50))
         positions = await copier.portfolio.get_open_positions()
         assert len(positions) == 1
-        # fill_price = 0.50 * (1 + 0.005 + 0.02) = 0.5125; entry > order price
+        # Mid-price fee curve: slip plus the price-shaped taker fee.
         assert positions[0].entry_price > 0.50
-        assert positions[0].entry_price == pytest.approx(0.5125)
+        assert positions[0].entry_price == pytest.approx(0.507499875)
 
     @pytest.mark.asyncio
     async def test_zero_slippage_keeps_entry_at_current_price(self, copier):
@@ -1094,6 +1094,13 @@ class TestSkipReasons:
         finally:
             cleanup()
         assert any(s["reason"] == "entry_price_band" for s in self._skips(records))
+
+    @pytest.mark.asyncio
+    async def test_price_shaped_fee_curve_allows_high_price_when_edge_survives(self, copier, gamma):
+        copier.config.copy_trading.max_entry_price = 0.99
+        gamma.get_market_price = AsyncMock(return_value=0.96)
+        await copier.handle_trade_event(buy_event(price=0.96))
+        assert await copier.portfolio.position_count() == 1
 
     @pytest.mark.asyncio
     async def test_stale_trade_reason(self, copier):

@@ -19,6 +19,9 @@ from polymarket_copier.api.clob_client import (
     ClobClient,
     InsufficientLiquidityError,
     _extract_live_fields,
+    gross_buy_fill_price,
+    net_sell_fill_price,
+    taker_fee_per_share,
 )
 from polymarket_copier.config import AppConfig
 from polymarket_copier.models.types import Order
@@ -160,16 +163,14 @@ class TestPaperFillPrice:
     async def test_buy_fill_price_above_order_price(self, paper_client):
         result = await paper_client.place_order(buy_order(price=0.50))
         assert "fill_price" in result
-        # fill = 0.50 * (1 + 0.005 + 0.02) = 0.5125
-        assert result["fill_price"] == pytest.approx(0.5125)
+        assert result["fill_price"] == pytest.approx(gross_buy_fill_price(0.50, 0.005, 0.02))
 
     @pytest.mark.asyncio
     async def test_sell_fill_price_below_order_price(self, paper_client):
         order = Order(market_id="mkt-a", token_id="tok-a", side="SELL", price=0.80, size_usdc=100.0)
         result = await paper_client.place_order(order)
         assert "fill_price" in result
-        # fill = 0.80 * (1 - 0.025) = 0.78
-        assert result["fill_price"] == pytest.approx(0.80 * 0.975)
+        assert result["fill_price"] == pytest.approx(net_sell_fill_price(0.80, 0.005, 0.02))
 
     @pytest.mark.asyncio
     async def test_fill_price_clamped_to_one_on_buy(self, paper_client):
@@ -189,11 +190,18 @@ class TestPaperFillPrice:
 
         cfg = AppConfig(mode="paper", bankroll=10_000)
         cfg.copy_trading.paper_fill_slippage_pct = 0.01
-        cfg.copy_trading.paper_taker_fee_pct = 0.03
+        cfg.copy_trading.paper_taker_fee_rate = 0.03
         client = ClobClient(cfg)
         result = await client.place_order(buy_order(price=0.50))
-        # fill = 0.50 * (1 + 0.01 + 0.03) = 0.52
-        assert result["fill_price"] == pytest.approx(0.52)
+        assert result["fill_price"] == pytest.approx(gross_buy_fill_price(0.50, 0.01, 0.03))
+
+    def test_taker_fee_curve_peaks_at_mid(self):
+        mid = taker_fee_per_share(0.50, 0.02)
+        low = taker_fee_per_share(0.05, 0.02)
+        high = taker_fee_per_share(0.95, 0.02)
+        assert mid > low
+        assert mid > high
+        assert low == pytest.approx(high)
 
 
 # ─── Live slippage cap (configurable) ────────────────────────────────────────

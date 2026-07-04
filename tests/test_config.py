@@ -216,6 +216,14 @@ class TestAppConfig:
         with pytest.raises(ValidationError):
             AppConfig(copy_trading={"live_order_max_retries": 2})
 
+    def test_taker_fee_rate_supports_new_key(self):
+        config = AppConfig(copy_trading={"paper_taker_fee_rate": 0.03})
+        assert config.copy_trading.taker_fee_rate() == pytest.approx(0.03)
+
+    def test_taker_fee_rate_supports_legacy_alias(self):
+        config = AppConfig(copy_trading={"paper_taker_fee_pct": 0.03})
+        assert config.copy_trading.taker_fee_rate() == pytest.approx(0.03)
+
 
 class TestShippedConfigMatchesCodeDefaults:
     """config.yaml has repeatedly drifted from config.py's post-fix defaults

@@ -23,6 +23,24 @@ CHAIN_ID = 137  # Polygon mainnet
 _MIN_RETRY_SHARES = 1.0
 
 
+def taker_fee_per_share(price: float, fee_rate: float) -> float:
+    """Return Polymarket's taker fee per share at a given execution price."""
+    bounded = min(max(price, 0.0), 1.0)
+    return max(fee_rate, 0.0) * bounded * (1.0 - bounded)
+
+
+def gross_buy_fill_price(price: float, slippage_pct: float, fee_rate: float) -> float:
+    """Estimated BUY fill price after slippage and taker fee."""
+    slipped = min(max(price * (1.0 + slippage_pct), 0.0), 1.0)
+    return min(slipped + taker_fee_per_share(slipped, fee_rate), 1.0)
+
+
+def net_sell_fill_price(price: float, slippage_pct: float, fee_rate: float) -> float:
+    """Estimated SELL proceeds per share after slippage and taker fee."""
+    slipped = min(max(price * (1.0 - slippage_pct), 0.0), 1.0)
+    return max(slipped - taker_fee_per_share(slipped, fee_rate), 0.0)
+
+
 def _extract_live_fields(d: Any) -> tuple[Optional[str], Optional[float], Optional[float]]:
     """Best-effort (order_id, filled_size, avg_price) from a venue order dict (M12).
 
@@ -239,12 +257,11 @@ class ClobClient:
             # live) so paper PnL reflects the deeper book-walk of large orders. Fee
             # is linear and size-independent, so it is NOT scaled.
             slip = self.config.copy_trading.paper_fill_slippage_pct * self._size_multiplier(order.size_usdc)
-            fee = self.config.copy_trading.paper_taker_fee_pct
-            cost = slip + fee
+            fee_rate = self.config.copy_trading.taker_fee_rate()
             if order.side == "BUY":
-                fill_price = min(order.price * (1.0 + cost), 1.0)
+                fill_price = gross_buy_fill_price(order.price, slip, fee_rate)
             else:
-                fill_price = max(order.price * (1.0 - cost), 0.0)
+                fill_price = net_sell_fill_price(order.price, slip, fee_rate)
 
             result = {
                 "status": "PAPER",
@@ -261,7 +278,7 @@ class ClobClient:
                 order.size_usdc,
                 order.price,
                 fill_price,
-                cost * 100,
+                max(fill_price - order.price, order.price - fill_price) * 100,
                 order.market_id,
             )
             return result

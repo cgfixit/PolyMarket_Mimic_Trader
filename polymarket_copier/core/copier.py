@@ -8,7 +8,12 @@ import math
 import time
 import uuid
 
-from polymarket_copier.api.clob_client import ClobClient, InsufficientLiquidityError
+from polymarket_copier.api.clob_client import (
+    ClobClient,
+    InsufficientLiquidityError,
+    gross_buy_fill_price,
+    net_sell_fill_price,
+)
 from polymarket_copier.api.gamma_client import GammaClient
 from polymarket_copier.config import AppConfig
 from polymarket_copier.core import metrics
@@ -162,6 +167,17 @@ class CopyTrader:
             token_id=event.token_id,
             **detail,
         )
+
+    def _expected_entry_fill_price(self, entry_price: float, size_usdc: float) -> float:
+        """Estimate conservative entry cost using the current mode's slippage model."""
+        ct = self.config.copy_trading
+        size_mult = self.clob._size_multiplier(size_usdc)
+        slip = (
+            ct.paper_fill_slippage_pct * size_mult
+            if self.config.mode == "paper"
+            else self.clob._effective_slippage(size_usdc)
+        )
+        return gross_buy_fill_price(entry_price, slip, ct.taker_fee_rate())
 
     async def handle_trade_event(self, event: TradeEvent) -> None:
         """Called by TradeMonitor on every new detected trade."""
@@ -344,21 +360,6 @@ class CopyTrader:
             self._record_skip("entry_price_band", event, current_price=current_price)
             return
 
-        # 4c. H5: pre-copy edge check — skip if round-trip fees consume all upside.
-        # Estimate TP at current_price; if adjusted entry (current + round-trip cost)
-        # already exceeds estimated TP, there is no profitable path after fees.
-        tp_estimate, _ = self.risk._compute_thresholds(current_price)
-        adj_entry = current_price * (1.0 + ct.round_trip_fee_pct)
-        if tp_estimate <= adj_entry:
-            logger.info(
-                "Skip: post-fee edge exhausted (tp=%.4f <= adj_entry=%.4f at %.1f%% fee)",
-                tp_estimate,
-                adj_entry,
-                ct.round_trip_fee_pct * 100,
-            )
-            self._record_skip("post_fee_edge", event, tp_estimate=round(tp_estimate, 4), adj_entry=round(adj_entry, 4))
-            return
-
         # 5. Market volume check.
         if market and market.volume_24h < self.config.copy_trading.min_market_volume:
             logger.info(
@@ -427,6 +428,26 @@ class CopyTrader:
 
         if copy_size_usdc <= 0 or current_price <= 0:
             self._record_skip("zero_size", event, copy_size_usdc=round(copy_size_usdc, 4))
+            return
+
+        # 4c. H5/PR2: pre-copy edge check — use price-shaped taker fees and the
+        # current mode's slippage model rather than a flat fee multiplier.
+        tp_estimate, _ = self.risk._compute_thresholds(current_price)
+        expected_entry = self._expected_entry_fill_price(current_price, copy_size_usdc)
+        expected_exit = net_sell_fill_price(tp_estimate, 0.0, ct.taker_fee_rate())
+        if expected_exit <= expected_entry:
+            logger.info(
+                "Skip: post-fee edge exhausted (tp_net=%.4f <= entry_gross=%.4f)",
+                expected_exit,
+                expected_entry,
+            )
+            self._record_skip(
+                "post_fee_edge",
+                event,
+                tp_estimate=round(tp_estimate, 4),
+                entry_gross=round(expected_entry, 4),
+                tp_net=round(expected_exit, 4),
+            )
             return
 
         size_shares = copy_size_usdc / max(current_price, 1e-6)
