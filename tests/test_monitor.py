@@ -53,6 +53,32 @@ class TestParseTradeEvent:
         event = _parse_trade_event("0xabc", raw)
         assert event.trade_type == TradeType.SELL
 
+    def test_parse_side_from_activity_type_when_side_missing(self):
+        raw = {
+            "id": "t3",
+            "type": "buy",
+            "market": "mkt-a",
+            "asset": "tok-a",
+            "price": "0.65",
+            "size": "100",
+            "timestamp": 1_700_000_000,
+        }
+        event = _parse_trade_event("0xabc", raw)
+        assert event is not None
+        assert event.trade_type == TradeType.BUY
+
+    def test_unknown_side_returns_none(self):
+        raw = {
+            "id": "t4",
+            "type": "trade",
+            "market": "mkt-a",
+            "asset": "tok-a",
+            "price": "0.65",
+            "size": "100",
+            "timestamp": 1_700_000_000,
+        }
+        assert _parse_trade_event("0xabc", raw) is None
+
     def test_missing_market_returns_none(self):
         raw = {"id": "t1", "side": "BUY", "price": "0.5", "size": "10"}
         assert _parse_trade_event("0xabc", raw) is None

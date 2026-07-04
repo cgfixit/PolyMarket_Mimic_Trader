@@ -165,6 +165,32 @@ class TestComputeTraderStats:
         assert stats.trade_count == 1
         assert stats.win_rate == 1.0
 
+    def test_buy_sell_activity_types_are_used_when_side_missing(self):
+        activity = [
+            {
+                "id": "b1",
+                "type": "buy",
+                "market": "m",
+                "asset": "a",
+                "price": "0.50",
+                "size": "100",
+                "timestamp": 1_700_000_000,
+            },
+            {
+                "id": "s1",
+                "type": "sell",
+                "market": "m",
+                "asset": "a",
+                "price": "0.60",
+                "size": "60",
+                "timestamp": 1_700_001_000,
+            },
+        ]
+        stats = _compute_trader_stats("0xabc", "Name", 50000, activity)
+        assert stats.trade_count == 1
+        assert stats.win_rate == 1.0
+        assert stats.pnl_per_trade == [pytest.approx(0.2)]
+
     def test_non_trade_types_ignored(self):
         activity = [
             {"id": "x", "type": "transfer", "side": "BUY", "market": "m", "asset": "a", "price": "0.5", "size": "10"},

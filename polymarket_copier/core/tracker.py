@@ -47,6 +47,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
 
 from polymarket_copier.utils.addresses import normalize_address
+from polymarket_copier.utils.activity import activity_side
 
 logger = logging.getLogger(__name__)
 
@@ -625,7 +626,7 @@ def _compute_trader_stats(
 
         market_id = str(item.get("market", item.get("conditionId", "")))
         token_id = str(item.get("asset", item.get("tokenId", "")))
-        side = str(item.get("side", "")).upper()
+        side = activity_side(item)
 
         try:
             price = float(item.get("price", 0))
