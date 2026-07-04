@@ -1,31 +1,25 @@
-# /optimizer — Codebase Quality Audit
+# /optimizer
 
-Run a comprehensive code quality audit of the PolyMarket_Mimic_Trader codebase and produce a prioritized findings report.
+Use `.codex/skills/optimizer/SKILL.md` as the source of truth for the
+PolyMarket_Mimic_Trader optimizer workflow.
 
-## What this does
+For read-only audit requests:
 
-1. **Static analysis** — Run `ruff check .` and report any lint issues
-2. **Type coverage** — Run `mypy polymarket_copier/` and surface type errors
-3. **Test health** — Run `pytest -v --tb=short` and report failures or slow tests
-4. **Code smell scan** — Search for TODOs, FIXMEs, hardcoded values, silent exception swallows, and missing error context in HTTP calls
-5. **Async safety** — Check for unawaited coroutines, missing `await`, and bare `except` blocks
-6. **Memory / performance** — Flag unbounded collections, O(n²) patterns, or per-tick DB writes
-7. **Security** — Check for secrets in code, command injection risks, and unvalidated external data
+- inspect CI, tests, `polymarket_copier/`, config, and API or SQLite choke points
+- return ranked findings first with file and line references
+- prefer small safe fixes over broad rewrites
 
-## Output format
+For execute or PR-opening requests:
 
-Produce a ranked findings table:
+- run `bash .codex/skills/optimizer/bootstrap.sh [branch-name]`
+- deduplicate against open PRs before selecting work
+- group findings into focused draft-PR chunks
+- verify with the narrowest useful lint, mypy, pytest, or paper-mode check
 
-| # | Severity | File:Line | Finding | Suggested Fix |
-|---|----------|-----------|---------|---------------|
-| 1 | HIGH | ... | ... | ... |
+Guardrails:
 
-Then summarize: total issues found, estimated fix time, and which are safe to batch into a single PR.
+- never commit directly to `main`
+- preserve range-relative TP/SL, exposure rollback, cold-start guards, awaited async callbacks, and paper mode as default
+- do not change live-trading behavior, secrets handling, or risk math without explicit user direction
 
-## Usage
-
-```
-/optimizer
-```
-
-Optional: `/optimizer --focus=async` to limit scan to async safety checks only.
+Optional: `/optimizer --focus=async` to bias the scan toward async safety and event-loop choke points.

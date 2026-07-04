@@ -1,22 +1,27 @@
 # Optimizer
 
-Use this repo-local workflow when the user asks to optimize, audit, harden, or review code quality.
+Use `.codex/skills/optimizer/SKILL.md` as the source of truth for the
+PolyMarket_Mimic_Trader optimizer workflow.
 
-Scope:
+When the user asks to optimize, harden, audit, or open focused improvement PRs:
+
+- inspect only for read-back or review requests
+- run `bash .codex/skills/optimizer/bootstrap.sh [branch-name]` when execution is requested
+- scan CI, tests, `polymarket_copier/`, config, and API or SQLite choke points
+- deduplicate against open PRs before choosing focus areas
+- group work into small draft-PR chunks instead of one broad rewrite
+
+Verification bias:
 
 - `powershell -File scripts/check-lint.ps1`
 - `python -m mypy polymarket_copier`
-- `pytest -v --tb=short`
-- targeted grep for TODO/FIXME, bare `except`, silent HTTP failures, async misuse, and obvious performance leaks
+- `pytest -v -m "not integration"`
+- narrower tests or paper-mode runs when the touched area justifies them
 
-Output:
+Guardrails:
 
-- Ranked findings first
-- File and line references
-- Minimal safe fixes, not broad rewrites
+- never commit directly to `main`
+- preserve range-relative TP/SL, exposure rollback, cold-start guards, awaited async callbacks, and paper mode as default
+- do not change live-trading behavior, secrets handling, or risk math without explicit user direction
 
-Notes:
-
-- This mirrors the existing `.claude/commands/optimizer.md` workflow so Codex and Claude use the same audit shape.
-- For over-engineering cleanup, pair this with the Ponytail skill instead of inventing new abstractions.
-- When Codex runs this after a Claude-style pass, bias toward different findings: measurable import/runtime cost, repeated local I/O, shared choke points, CI/runtime drift, and places where deleting code is better than refactoring it.
+For over-engineering cleanup, pair this with Ponytail instead of inventing new abstractions.
