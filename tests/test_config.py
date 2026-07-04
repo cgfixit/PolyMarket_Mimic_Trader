@@ -93,6 +93,50 @@ class TestAppConfig:
         with pytest.raises(ConfigError, match="POLY_PRIVATE_KEY required"):
             load_config(config_path=str(config_file))
 
+    def test_signature_type_and_funder_default_unset(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "paper"}))
+        monkeypatch.delenv("POLY_SIGNATURE_TYPE", raising=False)
+        monkeypatch.delenv("POLY_FUNDER", raising=False)
+        config = load_config(config_path=str(config_file))
+        assert config.signature_type == 0
+        assert config.funder == ""
+
+    def test_signature_type_and_funder_env_override(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "paper"}))
+        monkeypatch.setenv("POLY_SIGNATURE_TYPE", "3")
+        monkeypatch.setenv("POLY_FUNDER", "0xfunder")
+        config = load_config(config_path=str(config_file))
+        assert config.signature_type == 3
+        assert config.funder == "0xfunder"
+
+    def test_invalid_signature_type_raises(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "paper"}))
+        monkeypatch.setenv("POLY_SIGNATURE_TYPE", "not-a-number")
+        with pytest.raises(ConfigError, match="POLY_SIGNATURE_TYPE must be an integer"):
+            load_config(config_path=str(config_file))
+
+    def test_live_mode_signature_type_3_requires_funder(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "live"}))
+        monkeypatch.setenv("POLY_PRIVATE_KEY", "0xdeadbeef")
+        monkeypatch.setenv("POLY_SIGNATURE_TYPE", "3")
+        monkeypatch.delenv("POLY_FUNDER", raising=False)
+        with pytest.raises(ConfigError, match="POLY_FUNDER required"):
+            load_config(config_path=str(config_file))
+
+    def test_live_mode_signature_type_3_with_funder_succeeds(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "live"}))
+        monkeypatch.setenv("POLY_PRIVATE_KEY", "0xdeadbeef")
+        monkeypatch.setenv("POLY_SIGNATURE_TYPE", "3")
+        monkeypatch.setenv("POLY_FUNDER", "0xfunder")
+        config = load_config(config_path=str(config_file))
+        assert config.signature_type == 3
+        assert config.funder == "0xfunder"
+
     def test_config_error_is_value_error(self):
         # Subclassing ValueError keeps any existing `except ValueError` callers
         # working while allowing precise `except ConfigError` handling.
@@ -179,3 +223,28 @@ class TestAppConfig:
     def test_taker_fee_rate_supports_legacy_alias(self):
         config = AppConfig(copy_trading={"paper_taker_fee_pct": 0.03})
         assert config.copy_trading.taker_fee_rate() == pytest.approx(0.03)
+
+
+class TestShippedConfigMatchesCodeDefaults:
+    """config.yaml has repeatedly drifted from config.py's post-fix defaults
+    (trailing_stop_fraction, half_life_days, min_trades all silently reverted
+    to pre-fix values because nothing checked the shipped file against the
+    code). Load the actual repo-root config.yaml and assert the intentionally
+    "fixed" fields still hold their fixed values, so a future edit to either
+    file that reintroduces drift fails CI instead of shipping silently.
+    """
+
+    @pytest.fixture
+    def shipped_config(self):
+        return load_config(config_path="config.yaml")
+
+    def test_trailing_stop_fraction_matches_code_default(self, shipped_config):
+        assert (
+            shipped_config.risk_management.trailing_stop_fraction == AppConfig().risk_management.trailing_stop_fraction
+        )
+
+    def test_half_life_days_matches_code_default(self, shipped_config):
+        assert shipped_config.trader_selection.half_life_days == AppConfig().trader_selection.half_life_days
+
+    def test_min_trades_matches_code_default(self, shipped_config):
+        assert shipped_config.trader_selection.min_trades == AppConfig().trader_selection.min_trades
