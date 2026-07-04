@@ -31,5 +31,13 @@ Notes:
 - This repo contains `CLAUDE.md` with detailed operational rules.
 - Canonical Codex repo instructions live in root `AGENTS.md`.
 - Repo-local Codex workflow notes live in `.codex/commands/`.
+- Reusable Codex skills live in `.codex/skills/`.
+- Mirror the CyClaw split: repo facts in `AGENTS.md`, reusable playbooks in `.codex/`.
 - `.codex/commands/optimizer.md` mirrors the existing Claude optimizer audit.
 - `.codex/commands/ponytail.md` documents how to apply Ponytail safely in this trading repo.
+- `.codex/skills/refactor/SKILL.md` is the Codex-native iterative refactor and speed loop.
+
+Codex optimization bias:
+
+- Prefer measurable hot-path findings over generic code-style nits.
+- Hunt for unique issues a broad Claude-style optimizer often repeats past: shared async choke points, repeated config or DB loads, import/startup latency, CI/runtime drift, and code that should be deleted instead of abstracted.

@@ -1,30 +1,32 @@
 # AGENTS.md
 
-Repository: `PolyMarket_Mimic_Trader`  
-Stack: Python 3.10+, async trading bot
+Repository: `PolyMarket_Mimic_Trader`
+Stack: Python 3.10+, asyncio trading bot
 
 Start here:
 
-- Read `CLAUDE.md` before changing trading logic, risk rules, or async orchestration.
-- Read `.codex/README.md` for Codex-specific workflow notes.
-- Use `.codex/commands/optimizer.md` when asked to audit, optimize, or review quality.
-- Use Ponytail when the user asks for the simplest/minimal solution or when pruning over-engineering.
+- Read `CLAUDE.md` before changing trading logic, risk rules, async orchestration, or live-mode behavior.
+- Read `.codex/README.md` for the repo-local Codex workflow.
+- Use `.codex/skills/refactor/SKILL.md` when asked to refactor structure or run an iterative speed/refactor loop.
+- Use `.codex/commands/optimizer.md` for read-only audit and quality-review passes.
+- Use Ponytail when the user asks for the shortest safe fix or when deleting over-engineering.
 
 Behavioral baseline:
 
-- Preserve existing safety rules in `CLAUDE.md`, especially range-relative TP/SL, exposure rollback, cold-start guards, and the no-retry rule for failed orders.
-- Use async-safe patterns. Avoid blocking calls, unbounded polling work, or sync I/O in event-loop paths.
-- Do not alter trading math, position sizing, or execution assumptions without explicit follow-up.
-- Prefer small diffs at the real choke point instead of patching symptoms in multiple callers.
+- Preserve the safety rules in `CLAUDE.md`, especially range-relative TP/SL, exposure rollback, cold-start guards, and the no-retry rule for failed orders.
+- Use async-safe patterns. Avoid blocking calls, unbounded polling, or sync I/O in hot event-loop paths.
+- Do not alter trading math, position sizing, exchange assumptions, or live-trading behavior without explicit follow-up.
+- Prefer small diffs at the shared choke point instead of patching symptoms in multiple callers.
 - Never hardcode secrets. Keep `.env` local and out of repo.
 - Use parameterized SQL or safe library APIs when touching SQLite reads or writes.
-- Keep changes production-safe by default. Paper mode stays the default unless the user explicitly requests live-mode work.
+- Keep paper mode as the default unless the maintainer explicitly requests live-mode work.
 
-Frequently used commands:
+Validation commands:
 
 - `pip install -r requirements.txt`
 - `pytest -v`
 - `pytest -v -m "not integration"`
+- `pytest tests/test_risk_manager.py -v`
 - `powershell -File scripts/check-lint.ps1`
 - `powershell -File scripts/check-lint.ps1 -Fix`
 - `python -m mypy polymarket_copier`
@@ -32,18 +34,26 @@ Frequently used commands:
 
 Repo facts:
 
-- Line length is 120 (`pyproject.toml`)
-- Ruff is configured; tests use `asyncio_mode = "auto"`
-- Existing repo-local quality workflow lives in `.claude/commands/optimizer.md`
+- Line length is 120 in `pyproject.toml`.
+- Tests use `asyncio_mode = "auto"` with shared fixtures in `tests/conftest.py`.
+- Prometheus metrics exist when enabled in `config.yaml`, but do not assume a metrics endpoint is available in ordinary local runs.
+- Existing Claude-side audit notes live in `.claude/commands/optimizer.md`; keep Codex guidance repo-native and tool-agnostic.
 
 Code map:
-- `polymarket_copier/main.py`
-- `polymarket_copier/core/copier.py`
-- `polymarket_copier/core/monitor.py`
-- `polymarket_copier/core/risk_manager.py`
-- `polymarket_copier/core/portfolio.py`
-- `polymarket_copier/core/sizing.py`
-- `polymarket_copier/api/*.py`
-- `polymarket_copier/config.py`
-- `config.yaml`
-- `tests/`
+
+- `polymarket_copier/main.py` - startup, supervision loops, shutdown flow
+- `polymarket_copier/config.py` - env and YAML configuration
+- `polymarket_copier/core/copier.py` - trade validation and copy decisions
+- `polymarket_copier/core/monitor.py` - polling and price-stream monitoring
+- `polymarket_copier/core/risk_manager.py` - TP/SL, exposure, and circuit-breaker logic
+- `polymarket_copier/core/portfolio.py` - SQLite-backed position persistence
+- `polymarket_copier/core/sizing.py` - Kelly sizing logic
+- `polymarket_copier/api/*.py` - Polymarket API clients
+- `config.yaml` - runtime parameters
+- `tests/` - unit, integration, metrics, and chaos coverage
+
+Claim discipline:
+
+- Separate repo-backed facts, measured runtime results, market signals, and inference when editing docs or strategy notes.
+- Do not turn README or profitability docs into performance or PMF claims without current evidence.
+- Prefer paper-mode verification and measured logs over narrative claims about trading edge.
