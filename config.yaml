@@ -8,9 +8,9 @@ metrics_refresh_seconds: 5.0      # M16: gauge refresh interval
 trader_selection:
   min_pnl: 10000
   min_win_rate: 0.55
-  min_trades: 50
+  min_trades: 150                   # M12: must match config.py default; 50 makes winner's-curse selection a near-certainty
   rebalance_days: 7
-  half_life_days: 14
+  half_life_days: 7                 # L4: must match config.py default; 14 let dormant traders retain score
   max_top_traders: 5
 
 copy_trading:
@@ -45,7 +45,7 @@ risk_management:
   low_entry_tp_fraction: 0.25     # L5: TP fraction floor at the price floor
   min_tp_abs: 0.03
   min_sl_abs: 0.02
-  trailing_stop_fraction: 0.15
+  trailing_stop_fraction: 0.40    # H1: must match config.py default; 0.15 exits on ~7% pullback (normal noise)
   time_exit_hours: 48
   time_exit_min_range_move: 0.10
   daily_loss_limit_pct: 0.03
