@@ -28,10 +28,10 @@ Baseline architecture from initial inspection:
 - Portfolio manager persists open/closed positions in SQLite.
 
 Notes:
-- This repo contains `CLAUDE.md` with detailed operational rules.
+- This repo contains `CLAUDE.md` with detailed operational rules (mostly for claude but you can  reference if not in .codex folder or here
 - Canonical Codex repo instructions live in root `AGENTS.md`.
 - Repo-local Codex workflow notes live in `.codex/commands/`.
-- Reusable Codex skills live in `.codex/skills/`.
+- Reusable Codex skills live in `.codex/commands/` and `.codex/skills/`.
 - Mirror the CyClaw split: repo facts in `AGENTS.md`, reusable playbooks in `.codex/`.
 - `.codex/commands/optimizer.md` mirrors the existing Claude optimizer audit.
 - `.codex/commands/ponytail.md` documents how to apply Ponytail safely in this trading repo.
