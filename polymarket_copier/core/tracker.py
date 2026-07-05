@@ -47,7 +47,15 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
 
 from polymarket_copier.utils.addresses import normalize_address
-from polymarket_copier.utils.activity import activity_side
+from polymarket_copier.utils.activity import (
+    activity_id,
+    activity_market_id,
+    activity_notional_usdc,
+    activity_side,
+    activity_token_id,
+    activity_type,
+    is_trade_activity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -619,18 +627,18 @@ def _compute_trader_stats(
     _REDEEM_TYPES = ("redeem", "claim", "reward")
 
     for item in activity:
-        item_type = str(item.get("type", "")).lower()
+        item_type = activity_type(item)
         is_redeem = item_type in _REDEEM_TYPES
-        if item_type not in ("trade", "buy", "sell") and not is_redeem:
+        if not is_trade_activity(item) and not is_redeem:
             continue
 
-        market_id = str(item.get("market", item.get("conditionId", "")))
-        token_id = str(item.get("asset", item.get("tokenId", "")))
+        market_id = activity_market_id(item)
+        token_id = activity_token_id(item)
         side = activity_side(item)
 
         try:
             price = float(item.get("price", 0))
-            size = float(item.get("size", item.get("usdcSize", 0)))
+            size = activity_notional_usdc(item)
         except (ValueError, TypeError):
             continue
 
@@ -659,7 +667,7 @@ def _compute_trader_stats(
                 roi = pnl_dollars / cost_basis
                 trade_records.append(
                     TradeRecord(
-                        trade_id=str(item.get("id", "")),
+                        trade_id=activity_id(item),
                         market_id=market_id,
                         pnl=roi,  # ROI fraction
                         is_win=pnl_dollars > 0,
@@ -685,7 +693,7 @@ def _compute_trader_stats(
             roi = pnl_dollars / cost_basis
             trade_records.append(
                 TradeRecord(
-                    trade_id=str(item.get("id", "")),
+                    trade_id=activity_id(item),
                     market_id=market_id,
                     pnl=roi,  # ROI fraction, e.g. 0.10 = +10%
                     is_win=pnl_dollars > 0,
