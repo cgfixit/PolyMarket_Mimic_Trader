@@ -167,3 +167,4 @@ class TestParseFeeRate:
 
     def test_invalid_rate_returns_none(self):
         assert _parse_fee_rate({"fd": {"r": "bad"}}) is None
+        assert _parse_fee_rate({"fd": {"r": 1.0}}) is None

@@ -1011,6 +1011,20 @@ class TestStructuredEvents:
         assert opened[0]["fee_source"] == "clob_market_info"
 
     @pytest.mark.asyncio
+    async def test_position_opened_event_falls_back_on_invalid_fee_rate(self, copier, gamma):
+        gamma.get_market_fee_rate = AsyncMock(return_value=object())
+        records, cleanup = self._capture_events()
+        try:
+            await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        finally:
+            cleanup()
+
+        opened = [r for r in records if r.get("event") == "position_opened"]
+        assert len(opened) == 1
+        assert opened[0]["fee_rate"] == pytest.approx(copier.config.copy_trading.taker_fee_rate())
+        assert opened[0]["fee_source"] == "config"
+
+    @pytest.mark.asyncio
     async def test_copy_skipped_event_carries_reason(self, copier, gamma):
         # Force a low-volume skip and assert the structured copy_skipped event fires.
         gamma.get_market = AsyncMock(

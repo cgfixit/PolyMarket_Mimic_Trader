@@ -23,6 +23,7 @@ CLOB_API_BASE = "https://clob.polymarket.com"
 # handshake on every call — material latency when running on a local server.
 _CONN_LIMIT = 20
 _KEEPALIVE_TIMEOUT = 30
+_MAX_REASONABLE_TAKER_FEE_RATE = 0.25
 
 
 class GammaClient:
@@ -168,7 +169,8 @@ def _coerce_fee_rate(value: object) -> Optional[float]:
     if rate < 0:
         return None
     # REST fee-rate endpoints report basis points; CLOB market fd.r reports a decimal rate.
-    return rate / 10_000.0 if rate > 1.0 else rate
+    rate = rate / 10_000.0 if rate > 1.0 else rate
+    return rate if rate <= _MAX_REASONABLE_TAKER_FEE_RATE else None
 
 
 def _parse_fee_rate(raw: dict) -> Optional[float]:

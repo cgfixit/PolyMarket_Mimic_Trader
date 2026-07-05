@@ -27,6 +27,8 @@ from polymarket_copier.utils.logger import log_event
 
 logger = logging.getLogger("polymarket_copier")
 
+_MAX_REASONABLE_TAKER_FEE_RATE = 0.25
+
 
 class CopyTrader:
     """Copies trades from tracked wallets with conservative risk parameters."""
@@ -169,12 +171,27 @@ class CopyTrader:
         )
 
     @staticmethod
-    def _fee_rate_for_market(market, clob_fee_rate: float | None, fallback_rate: float) -> tuple[float, str]:
+    def _coerce_fee_rate(value: object) -> float | None:
+        if value is None:
+            return None
+        try:
+            fee_rate = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(fee_rate) or fee_rate < 0 or fee_rate > _MAX_REASONABLE_TAKER_FEE_RATE:
+            return None
+        return fee_rate
+
+    @classmethod
+    def _fee_rate_for_market(cls, market, clob_fee_rate: object, fallback_rate: float) -> tuple[float, str]:
         """Choose the most specific fee rate available for edge checks."""
-        if clob_fee_rate is not None:
-            return clob_fee_rate, "clob_market_info"
-        if market and market.fee_rate is not None:
-            return market.fee_rate, "gamma_market"
+        fee_rate = cls._coerce_fee_rate(clob_fee_rate)
+        if fee_rate is not None:
+            return fee_rate, "clob_market_info"
+        if market:
+            fee_rate = cls._coerce_fee_rate(getattr(market, "fee_rate", None))
+            if fee_rate is not None:
+                return fee_rate, "gamma_market"
         return fallback_rate, "config"
 
     def _expected_entry_fill_price(self, entry_price: float, size_usdc: float, fee_rate: float) -> float:
