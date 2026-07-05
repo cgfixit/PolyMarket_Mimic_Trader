@@ -2,7 +2,7 @@
 
 **Scope:** This report reconciles the profitability/feasibility claims made across PR #75 (merged,
 `PROFITABILITY_ANALYSIS_JUNE_2026.md`), PR #76 (open, `docs/POLYMARKET_BOT_STRATEGY_RESEARCH_2026-06-30.md`),
-and PR #77 (merged, `POLYMARKET_BOT_STRATEGY_RESEARCH_20260630.md`) against (a) this repo's actual code and
+and PR #77 (merged; duplicate root copy now removed) against (a) this repo's actual code and
 (b) an independent deep-research fact-check against primary sources (Polymarket docs, CFTC/PR Newswire, SSRN,
 ICE IR, StepSecurity, CoinDesk, WSJ). It closes with the fixes applied on this branch and what's still open.
 
@@ -11,11 +11,11 @@ Full claim-by-claim ledger: `docs/PR_75_76_77_CLAIMS_NOTEPAD.md`. Methodology ca
 extraction with direct quotes from primary sources, not cross-verified by independent skeptic votes. Confidence
 is noted per finding.
 
-**Note on scope:** while this branch was in progress, `main` independently landed its own fix (commit `2e98738`,
-via PR #76/#79) for the same leaderboard-endpoint and WebSocket-heartbeat bugs PR #76/#77 identified, plus a
-`docs/POLYMARKET_REAL_MONEY_READINESS_PR_PLAN_2026-07-03.md` roadmap covering the remaining work (fee-model
-realism, live auth/SDK compatibility, profitability telemetry). This branch was rebased onto that `main`; the
-duplicate fix was dropped, and this report's §3 below reflects only what's unique to this PR.
+**Current main update, 2026-07-05:** after this report was written, `origin/main` also landed fee-curve realism,
+CLOB fee metadata, live geoblock preflight, profitability timing telemetry, documented WebSocket heartbeat,
+`usdcSize` activity notional parsing, and canonical `paper_taker_fee_rate` cleanup. The original conditional-NO
+profitability verdict still holds, but several implementation blockers listed below are now fixed or partially
+fixed on main.
 
 ---
 
@@ -70,11 +70,10 @@ guidance — checked out against primary sources essentially as both PRs describ
 
 ---
 
-## 3. Code changes landed on this branch
+## 3. Code changes now landed on main
 
-Mechanical, low-risk fixes on top of what `main` already landed independently (see the scope note above — the
-leaderboard-endpoint and WebSocket-heartbeat migration is **not** part of this PR; it's already on `main` via
-commit `2e98738`). 483 tests pass; `ruff check .` is clean.
+Mechanical, low-risk fixes have continued after the original branch. Current `origin/main` includes the earlier
+leaderboard/API drift work plus later real-money-readiness fixes:
 
 1. **Config drift fix, three instances** (`config.yaml`) — `trailing_stop_fraction` (0.15 → 0.40) and
    `half_life_days` (14 → 7) already matched `config.py`'s documented post-fix defaults but the shipped YAML
@@ -89,12 +88,18 @@ commit `2e98738`). 483 tests pass; `ruff check .` is clean.
    `py-clob-client` constructor, with a fail-closed validation: live mode + `signature_type=3` without `funder`
    set now raises `ConfigError` at startup instead of silently misconfiguring the deposit-wallet flow. This is a
    partial implementation of "PR 3: Live Auth/SDK Compatibility" from
-   `docs/POLYMARKET_REAL_MONEY_READINESS_PR_PLAN_2026-07-03.md` — the `py-clob-client-v2` migration itself and
-   the startup geoblock check that plan also calls for are still open.
+   `docs/POLYMARKET_REAL_MONEY_READINESS_PR_PLAN_2026-07-03.md`; the later live-geoblock preflight is also now
+   on main, while the `py-clob-client-v2` migration/proof remains open.
 3. **README accuracy** — corrected the "mirrors entries via fractional Kelly" framing (Kelly is opt-in, off by
    default; the actual default is a flat 50%-of-source-size multiplier) and added a caveat to the "Why This
    Exists" pitch that leaderboard rank is a candidate filter, not a proven copyable edge, per the SSRN findings.
    Also corrected a stale `trailing_stop_fraction` value in the parameter table.
+4. **Fee-curve and market-fee metadata** — paper fills and copy gates now use Polymarket's price-shaped taker-fee
+   curve (`fee_rate * price * (1 - price)`), with CLOB/Gamma market fee metadata when available.
+5. **Live geoblock preflight** — live mode now checks Polymarket's geoblock endpoint before entering the live order
+   path. This is a safety guard, not a legal approval.
+6. **Profitability telemetry and API drift follow-ups** — timing telemetry, documented WebSocket `PING`, `usdcSize`
+   activity notional parsing, and canonical `paper_taker_fee_rate` docs/config cleanup have landed.
 
 ---
 
@@ -104,20 +109,14 @@ Not fixed in this pass. `docs/POLYMARKET_REAL_MONEY_READINESS_PR_PLAN_2026-07-03
 as a 4-PR roadmap (fee realism, live auth/SDK, profitability telemetry) — this fact-check confirms that roadmap's
 priorities are the right ones and adds a couple of items it doesn't cover:
 
-1. **Fee-model curve shape (readiness plan "PR 2", still unimplemented).** The bot's flat
-   `paper_taker_fee_pct: 0.02` / `round_trip_fee_pct: 0.045` assumes the wrong curve shape — fees are concave
-   (`rate × p × (1−p)`, category-specific, ~0 at price extremes), not flat. Confirmed against
-   `docs.polymarket.com/trading/fees`. Requires the Gamma client to start fetching `category`/`feeRate` market
-   metadata (currently fetches neither) and re-deriving the H5 post-fee-edge gate and H7 extreme-price band — a
-   design change, not a constant swap, so left to that dedicated PR.
-2. **Build the offline backtest harness (readiness plan "PR 4").** The "30 days green paper PnL" go-live gate is
-   non-predictive (paper mode uses a synthetic fixed order book and always-full FOK fills). Remains the single
-   highest-leverage next step before any real capital.
-3. **`py-clob-client-v2` migration + startup geoblock check (rest of readiness plan "PR 3").** This branch adds
-   the `signature_type`/`funder` config half of that plan item; the SDK migration and the geoblock-eligibility
-   check at live-mode startup are still open. Also worth tracking: the open `py-clob-client-v2` GitHub issues
-   (#70, #90) reporting `signature_type=3` binding the API key to the wrong wallet — this should be re-verified
-   before actually flipping `signature_type` to 3 in a real deployment.
+1. **Build the offline backtest harness (readiness plan "PR 4").** The "30 days green paper PnL" go-live gate is
+   non-predictive. Paper mode is now better on fees, but it still cannot prove live fill/no-fill behavior or
+   adverse selection. This remains the single highest-leverage next step before any real capital.
+2. **Execution parity reporting.** Persist detection latency, submit latency, fill latency, source price, observed
+   spread, book VWAP, fee, size, skip reason, and realized PnL by source wallet and market type.
+3. **`py-clob-client-v2` migration and live auth proof.** Deposit-wallet config exists and geoblock preflight exists,
+   but the exact SDK/signature/funder live order path still needs minimal-fund proof. Track the open
+   `py-clob-client-v2` issues (#70, #90) before using `signature_type=3`.
 4. **De-bias trader win-rate/ROI metrics** — worthless-expiry losses aren't counted (no redeem record), inflating
    the tracker's selection metrics and the (currently-disabled) Kelly edge seed.
 5. **Regulatory re-check** — the new June 2026 CFTC investigation (finding #1 above) should be tracked; it wasn't
@@ -127,8 +126,7 @@ priorities are the right ones and adds a couple of items it doesn't cover:
 
 ## 5. Recommendation
 
-Do not increase live sizing or exit paper mode based on this fact-check alone — nothing here changes PR #75's
-conditional-NO verdict, and one correction (wallet profit concentration) makes the edge look narrower, not wider.
-The config-drift and auth-config fixes in §3 close two more known-broken/known-risky spots, on top of the
-leaderboard/WebSocket fixes `main` already landed — but paper-mode results still are not a valid go-live signal
-until the backtest harness (§4.2) exists.
+Do not increase live sizing or exit paper mode based on this fact-check alone. Later main-branch fixes remove more
+implementation drift, but nothing yet proves net expectancy after spread, slippage, fees, latency, skipped fills,
+and legal/venue constraints. Paper-mode results still are not a valid go-live signal until the backtest harness and
+execution parity reports exist.

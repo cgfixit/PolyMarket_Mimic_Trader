@@ -14,9 +14,9 @@ keeps only the claim-verification content, which is unaffected by which commit d
 **Sources:**
 - **PR #75** (merged) — `PROFITABILITY_ANALYSIS_JUNE_2026.md` — "can this strategy make money" (edge / cost / regulatory)
 - **PR #76** (open) — `docs/POLYMARKET_BOT_STRATEGY_RESEARCH_2026-06-30.md` — Codex strategy report (content ≡ PR #77's doc)
-- **PR #77** (merged) — `POLYMARKET_BOT_STRATEGY_RESEARCH_20260630.md` — "is the integration current against the live API"
+- **PR #77** (merged) — duplicate root copy of `docs/POLYMARKET_BOT_STRATEGY_RESEARCH_2026-06-30.md` — "is the integration current against the live API"
 
-Note: PR #76 and PR #77 carry the **same 399-line report** (different path/filename).
+Note: PR #76 and PR #77 carried the **same 399-line report**. The root duplicate was later removed; the retained copy is under `docs/`.
 
 Verification key: ✅ confirmed · ⚠️ partially confirmed / nuance needed · ❓ unverifiable from here · ❌ refuted
 
@@ -49,8 +49,8 @@ Verification key: ✅ confirmed · ⚠️ partially confirmed / nuance needed ·
 |---|-------|-----------|----------------|
 | C1 | Polymarket was historically 0% fee; **2026 introduced fees**; real fee is concave `feeRate·p·(1−p)` — peaks near p=0.50, ~0 at extremes; makers ~free / rebated | n/a | ✅ **confirmed** against docs.polymarket.com/trading/fees |
 | C2 | Polymarket US (DCM): taker Θ=0.05, max ≈ $1.25/100 contracts at $0.50, maker rebate ≈ −$0.31/100, effective Apr 3 2026 | n/a | ❌ **unconfirmed** — only a revenue-share maker-rebate pool (not a flat −$0.31 figure) is documented, and only for the global CLOB |
-| C3 | Global CLOB category taker caps ≈ $0.75 sports / $1.00 politics-finance-tech / $1.25 economics-culture-weather / $1.80 crypto per 100 shares; geopolitics free; sells not charged | ✅ still an open item — this bot does not yet fetch `category`/`feeRate` metadata at all (see `docs/POLYMARKET_REAL_MONEY_READINESS_PR_PLAN_2026-07-03.md` PR 2) | ⚠️ **one number off**: economics is 1.50%, not 1.25% (1.25% is culture/weather) |
-| C4 | Bot's flat `paper_taker_fee_pct: 0.02` / `round_trip_fee_pct: 0.045` has the **curve shape inverted** — H7 "extremes are expensive" mental model is backwards → rejects profitable extreme-price copies, accepts marginal mid-price copies | ✅ flat 2%/4.5% confirmed, still unfixed | ✅ confirmed real fee curve is the opposite shape |
+| C3 | Global CLOB category taker caps ≈ $0.75 sports / $1.00 politics-finance-tech / $1.25 economics-culture-weather / $1.80 crypto per 100 shares; geopolitics free; sells not charged | ✅ originally open; now partially addressed on `main` via CLOB/Gamma fee metadata parsing and fallback | ⚠️ **one number off**: economics is 1.50%, not 1.25% (1.25% is culture/weather) |
+| C4 | Bot's old flat `paper_taker_fee_pct: 0.02` / `round_trip_fee_pct: 0.045` model had the **curve shape inverted** — H7 "extremes are expensive" mental model was backwards | ✅ now addressed on `main`: `paper_taker_fee_rate` plus `fee_rate * price * (1 - price)` paper/copy-gate math | ✅ confirmed real fee curve is the opposite shape |
 | C5 | Dominant taker cost is **spread + slippage**, not fees; realistic round-trip friction ≈ 3–6%+ (spread <1¢ liquid, ~5¢ mid-tier, 10¢+ thin; Kaiko Feb-2026: single Deribit BTC strikes exceed total Polymarket depth 20–40×) | n/a | ⚠️ qualitatively supported (a live taker-strategy writeup shows execution assumptions dominate outcomes); the specific 3–6% figure wasn't independently confirmed |
 | C6 | Gamma live sample: liquid markets show spread 0.001 and `feeRate 0.03`; some markets `feeSchedule=null`, others `takerOnly=true`; volume-only market filter passes closed/stale/`acceptingOrders=false` markets | ✅ **now addressed on `main`** — commit `2e98738` added `closed`/`archived`/`restricted`/`accepting_orders`/`enable_order_book` parsing to `Market` and gates copies on them | n/a |
 | C7 | Polygon gas ≈ 0 for users (relayer-subsidized) — the one cost the bot can ignore | n/a | not independently re-checked (low priority) |
@@ -101,7 +101,7 @@ Verification key: ✅ confirmed · ⚠️ partially confirmed / nuance needed ·
 | # | Claim | Code check | External check |
 |---|-------|-----------|----------------|
 | H1 | Paper fills are always full FOK fills against a synthetic 0.50/0.51 book → paper never observes no-fill/partial-fill, which in live systematically removes the *best* trades (fast markets) | ✅ confirmed, still unaddressed | n/a |
-| H2 | Paper applies 0.5% slip + 2% fee both ways (≈4.5% round-trip) — better than midpoint-optimistic, but flat model ≠ discontinuous, size-sensitive real books | ✅ confirmed, still unaddressed (readiness plan PR 2) | ⚠️ qualitatively supported, see C5 |
+| H2 | Paper applies configured slippage plus price-shaped taker fee — better than midpoint-optimistic, but still not a discontinuous, size-sensitive real book | ✅ fee curve addressed; real-book VWAP/no-fill modeling still open | ⚠️ qualitatively supported, see C5 |
 | H3 | Paper mode skips the live depth gate entirely | ✅ confirmed, still true | n/a |
 | H4 | "30 days green paper PnL" as go-live gate is non-predictive; backtest on held-out history is the honest arbiter | ✅ gate documented in `next_steps.md` | n/a (methodological; agree — matches readiness plan PR 4's forward-paper gate) |
 
