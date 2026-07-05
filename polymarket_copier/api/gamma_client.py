@@ -23,6 +23,7 @@ CLOB_API_BASE = "https://clob.polymarket.com"
 # handshake on every call — material latency when running on a local server.
 _CONN_LIMIT = 20
 _KEEPALIVE_TIMEOUT = 30
+_MAX_REASONABLE_TAKER_FEE_RATE = 0.25
 
 
 class GammaClient:
@@ -118,6 +119,20 @@ class GammaClient:
             logger.warning("Failed to get price for token %s", token_id)
         return None
 
+    async def get_market_fee_rate(self, condition_id: str) -> Optional[float]:
+        """Return the current CLOB taker fee rate for a market, if published."""
+        session = await self._get_session()
+        url = f"{CLOB_API_BASE}/clob-markets/{condition_id}"
+        try:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+            if isinstance(data, dict):
+                return _parse_fee_rate(data)
+        except Exception:
+            logger.warning("Failed to get CLOB fee info for market %s", condition_id)
+        return None
+
 
 def _parse_resolve_time(raw: dict) -> Optional[datetime]:
     """Extract market resolution time from various possible field names."""
@@ -142,6 +157,36 @@ def _as_bool(value: object, default: bool) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes"}
     return bool(value)
+
+
+def _coerce_fee_rate(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if rate < 0:
+        return None
+    # REST fee-rate endpoints report basis points; CLOB market fd.r reports a decimal rate.
+    rate = rate / 10_000.0 if rate > 1.0 else rate
+    return rate if rate <= _MAX_REASONABLE_TAKER_FEE_RATE else None
+
+
+def _parse_fee_rate(raw: dict) -> Optional[float]:
+    for field_name in ("feeRate", "fee_rate", "takerFeeRate", "taker_fee_rate", "base_fee"):
+        rate = _coerce_fee_rate(raw.get(field_name))
+        if rate is not None:
+            return rate
+
+    for nested_name in ("fd", "feeDetails", "fee_details"):
+        nested = raw.get(nested_name)
+        if isinstance(nested, dict):
+            for field_name in ("r", "rate", "feeRate", "fee_rate"):
+                rate = _coerce_fee_rate(nested.get(field_name))
+                if rate is not None:
+                    return rate
+    return None
 
 
 def _parse_market(raw: dict) -> Market:
@@ -169,4 +214,6 @@ def _parse_market(raw: dict) -> Market:
         restricted=_as_bool(raw.get("restricted"), False),
         accepting_orders=_as_bool(raw.get("acceptingOrders", raw.get("accepting_orders")), True),
         enable_order_book=_as_bool(raw.get("enableOrderBook", raw.get("enable_order_book")), True),
+        fees_enabled=_as_bool(raw.get("feesEnabled", raw.get("fees_enabled")), False),
+        fee_rate=_parse_fee_rate(raw),
     )

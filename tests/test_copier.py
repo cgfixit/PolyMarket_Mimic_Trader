@@ -43,6 +43,7 @@ def gamma():
         )
     )
     g.get_market_price = AsyncMock(return_value=0.50)
+    g.get_market_fee_rate = AsyncMock(return_value=None)
     return g
 
 
@@ -993,6 +994,35 @@ class TestStructuredEvents:
         assert ev["trader"] == "0xwhale"
         assert ev["mode"] == "paper"
         assert "tp_price" in ev and "sl_price" in ev
+        assert ev["fee_source"] == "config"
+
+    @pytest.mark.asyncio
+    async def test_position_opened_event_uses_clob_fee_rate(self, copier, gamma):
+        gamma.get_market_fee_rate = AsyncMock(return_value=0.07)
+        records, cleanup = self._capture_events()
+        try:
+            await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        finally:
+            cleanup()
+
+        opened = [r for r in records if r.get("event") == "position_opened"]
+        assert len(opened) == 1
+        assert opened[0]["fee_rate"] == pytest.approx(0.07)
+        assert opened[0]["fee_source"] == "clob_market_info"
+
+    @pytest.mark.asyncio
+    async def test_position_opened_event_falls_back_on_invalid_fee_rate(self, copier, gamma):
+        gamma.get_market_fee_rate = AsyncMock(return_value=object())
+        records, cleanup = self._capture_events()
+        try:
+            await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        finally:
+            cleanup()
+
+        opened = [r for r in records if r.get("event") == "position_opened"]
+        assert len(opened) == 1
+        assert opened[0]["fee_rate"] == pytest.approx(copier.config.copy_trading.taker_fee_rate())
+        assert opened[0]["fee_source"] == "config"
 
     @pytest.mark.asyncio
     async def test_copy_skipped_event_carries_reason(self, copier, gamma):

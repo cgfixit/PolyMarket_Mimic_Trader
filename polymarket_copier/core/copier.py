@@ -7,6 +7,7 @@ import logging
 import math
 import time
 import uuid
+from typing import Any
 
 from polymarket_copier.api.clob_client import (
     ClobClient,
@@ -26,6 +27,8 @@ from polymarket_copier.utils.addresses import normalize_address
 from polymarket_copier.utils.logger import log_event
 
 logger = logging.getLogger("polymarket_copier")
+
+_MAX_REASONABLE_TAKER_FEE_RATE = 0.25
 
 
 class CopyTrader:
@@ -168,7 +171,31 @@ class CopyTrader:
             **detail,
         )
 
-    def _expected_entry_fill_price(self, entry_price: float, size_usdc: float) -> float:
+    @staticmethod
+    def _coerce_fee_rate(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            fee_rate = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(fee_rate) or fee_rate < 0 or fee_rate > _MAX_REASONABLE_TAKER_FEE_RATE:
+            return None
+        return fee_rate
+
+    @classmethod
+    def _fee_rate_for_market(cls, market, clob_fee_rate: object, fallback_rate: float) -> tuple[float, str]:
+        """Choose the most specific fee rate available for edge checks."""
+        fee_rate = cls._coerce_fee_rate(clob_fee_rate)
+        if fee_rate is not None:
+            return fee_rate, "clob_market_info"
+        if market:
+            fee_rate = cls._coerce_fee_rate(getattr(market, "fee_rate", None))
+            if fee_rate is not None:
+                return fee_rate, "gamma_market"
+        return fallback_rate, "config"
+
+    def _expected_entry_fill_price(self, entry_price: float, size_usdc: float, fee_rate: float) -> float:
         """Estimate conservative entry cost using the current mode's slippage model."""
         ct = self.config.copy_trading
         size_mult = self.clob._size_multiplier(size_usdc)
@@ -177,7 +204,7 @@ class CopyTrader:
             if self.config.mode == "paper"
             else self.clob._effective_slippage(size_usdc)
         )
-        return gross_buy_fill_price(entry_price, slip, ct.taker_fee_rate())
+        return gross_buy_fill_price(entry_price, slip, fee_rate)
 
     async def handle_trade_event(self, event: TradeEvent) -> None:
         """Called by TradeMonitor on every new detected trade."""
@@ -249,9 +276,10 @@ class CopyTrader:
         # 3+4. Fetch market metadata and current price in parallel — both are
         #      independent I/O operations so gathering them halves latency on the
         #      critical detection→copy path.
-        market, current_price = await asyncio.gather(
+        market, current_price, clob_fee_rate = await asyncio.gather(
             self.gamma.get_market(event.market_id),
             self.gamma.get_market_price(event.token_id),
+            self.gamma.get_market_fee_rate(event.market_id),
         )
 
         # 3. Resolution blackout. Fail CLOSED if market metadata is unavailable.
@@ -432,14 +460,17 @@ class CopyTrader:
 
         # 4c. H5/PR2: pre-copy edge check — use price-shaped taker fees and the
         # current mode's slippage model rather than a flat fee multiplier.
+        fee_rate, fee_source = self._fee_rate_for_market(market, clob_fee_rate, ct.taker_fee_rate())
         tp_estimate, _ = self.risk._compute_thresholds(current_price)
-        expected_entry = self._expected_entry_fill_price(current_price, copy_size_usdc)
-        expected_exit = net_sell_fill_price(tp_estimate, 0.0, ct.taker_fee_rate())
+        expected_entry = self._expected_entry_fill_price(current_price, copy_size_usdc, fee_rate)
+        expected_exit = net_sell_fill_price(tp_estimate, 0.0, fee_rate)
         if expected_exit <= expected_entry:
             logger.info(
-                "Skip: post-fee edge exhausted (tp_net=%.4f <= entry_gross=%.4f)",
+                "Skip: post-fee edge exhausted (tp_net=%.4f <= entry_gross=%.4f fee_rate=%.4f source=%s)",
                 expected_exit,
                 expected_entry,
+                fee_rate,
+                fee_source,
             )
             self._record_skip(
                 "post_fee_edge",
@@ -447,6 +478,8 @@ class CopyTrader:
                 tp_estimate=round(tp_estimate, 4),
                 entry_gross=round(expected_entry, 4),
                 tp_net=round(expected_exit, 4),
+                fee_rate=round(fee_rate, 6),
+                fee_source=fee_source,
             )
             return
 
@@ -688,6 +721,8 @@ class CopyTrader:
             size_usdc=round(copy_size_usdc, 4),
             quoted_price=current_price,
             fill_price=fill_price,
+            fee_rate=round(fee_rate, 6),
+            fee_source=fee_source,
             size_shares=round(pos.size_shares, 4),
             tp_price=pos.tp_price,
             sl_price=pos.sl_price,
