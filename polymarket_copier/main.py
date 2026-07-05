@@ -22,6 +22,8 @@ from polymarket_copier.core.risk_manager import RiskConfig, RiskManager
 from polymarket_copier.core.tracker import TrackerClient, TrackerConfig
 from polymarket_copier.utils.logger import setup_logger
 
+POLYMARKET_GEOBLOCK_URL = "https://polymarket.com/api/geoblock"
+
 
 def _update_tracker_metrics(tracker: TrackerClient) -> None:
     """Refresh the per-tracker Prometheus gauges after a leaderboard refresh."""
@@ -29,6 +31,29 @@ def _update_tracker_metrics(tracker: TrackerClient) -> None:
     metrics.LAST_TRACKER_REFRESH.set(tracker.last_refresh())
     for t in tracker.top_traders:
         metrics.TRADER_SCORE.labels(trader_address=t.stats.address, rank=str(t.rank)).set(t.score)
+
+
+async def _enforce_live_geoblock_preflight(config, session: aiohttp.ClientSession, logger) -> None:
+    """Fail closed before live order placement from Polymarket-blocked regions."""
+    if config.mode != "live":
+        return
+    try:
+        async with session.get(POLYMARKET_GEOBLOCK_URL) as resp:
+            resp.raise_for_status()
+            geo = await resp.json()
+    except Exception as exc:
+        raise ConfigError("Live mode geoblock preflight failed; refusing to start live trading") from exc
+
+    if not isinstance(geo, dict) or not isinstance(geo.get("blocked"), bool):
+        raise ConfigError("Live mode geoblock preflight returned an invalid response; refusing to start live trading")
+
+    country = str(geo.get("country") or "unknown")
+    region = str(geo.get("region") or "")
+    if geo["blocked"]:
+        location = f"{country}-{region}" if region else country
+        raise ConfigError(f"Polymarket geoblock preflight blocks live order placement from {location}")
+
+    logger.info("Polymarket geoblock preflight passed for %s%s", country, f"-{region}" if region else "")
 
 
 async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None) -> None:
@@ -58,6 +83,11 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
         timeout=aiohttp.ClientTimeout(total=15),
         connector=aiohttp.TCPConnector(limit=50, keepalive_timeout=30),
     )
+    try:
+        await _enforce_live_geoblock_preflight(config, shared_session, logger)
+    except Exception:
+        await shared_session.close()
+        raise
 
     risk_cfg = RiskConfig(
         tp_range_fraction=config.risk_management.tp_range_fraction,
