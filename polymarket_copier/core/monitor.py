@@ -371,7 +371,7 @@ class TradeMonitor:
         """Send Polymarket's application-level WS ping payload."""
         while not self._stop_event.is_set():
             await asyncio.sleep(_WS_PING_INTERVAL)
-            await ws.send("{}")
+            await ws.send("PING")
 
     async def _ws_send_subscription(self, ws, token_ids: List[str]) -> None:
         """Send a Market subscription message to the Polymarket CLOB WebSocket."""

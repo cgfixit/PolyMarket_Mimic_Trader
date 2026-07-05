@@ -213,6 +213,23 @@ class TestTradeMonitor:
         await monitor._ws_send_subscription(FakeWS(), ["tok-a"])
         assert sent == [{"type": "market", "assets_ids": ["tok-a"]}]
 
+    @pytest.mark.asyncio
+    async def test_ws_heartbeat_sends_polymarket_ping(self, monkeypatch):
+        sent = []
+
+        class FakeWS:
+            async def send(self, msg):
+                sent.append(msg)
+
+        async def no_sleep(_seconds):
+            monitor._stop_event.set()
+
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
+        monkeypatch.setattr("polymarket_copier.core.monitor.asyncio.sleep", no_sleep)
+
+        await monitor._ws_heartbeat(FakeWS())
+        assert sent == ["PING"]
+
 
 class TestColdStartPriming:
     def test_first_poll_primes_without_emitting(self):
