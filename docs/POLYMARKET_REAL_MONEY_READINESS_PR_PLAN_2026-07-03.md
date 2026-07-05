@@ -4,6 +4,13 @@
 
 This bot should be modernized as a realistic paper/research demo first. Real-money use stays blocked until forward paper results prove net edge after spread, slippage, fees, latency, and jurisdiction checks.
 
+## Status As Of 2026-07-05
+
+- PR 1 is implemented on main: current leaderboard/API shape, tradability gates, and documented WebSocket heartbeat are handled.
+- PR 2 is mostly implemented on main: paper fills/copy gates use the price-shaped fee curve and CLOB fee metadata where available. Remaining work is calibration and paper/live execution reporting from real order-book snapshots.
+- PR 3 is partially implemented on main: `signature_type`/`funder` config and live geoblock preflight exist. Remaining work is SDK-v2 migration or proof, minimal-fund live auth testing, and venue/legal sign-off.
+- PR 4 is still open and is the real go-live gate: backtesting, de-biased trader metrics, and net expectancy reports.
+
 ## PR 1: API Drift And Tradability Fixes
 
 Implemented scope:

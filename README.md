@@ -8,6 +8,12 @@ A Python copy-trading bot that monitors the most successful traders on [Polymark
 
 Only ~7.6% of Polymarket wallets are profitable, and academic research (Gómez-Cram, Guo, Jensen & Kung, SSRN #6617059, Apr 2026) finds that the ~3% of accounts with genuine, persistent skill earn it largely by reacting to public news *faster* than the market — an edge tied to speed of execution, not just strategy, that a bot mirroring trades seconds later is not guaranteed to inherit. This bot identifies historically strong traders via risk-adjusted scoring (not raw PnL) and mirrors their entries with tighter, range-relative risk controls, but treat leaderboard rank as a *candidate filter*, not a proven, copyable edge — validate with paper mode and your own measurement before risking real capital. See `PROFITABILITY_ANALYSIS_JUNE_2026.md` for a full analysis.
 
+## Real-Money Status
+
+Paper mode is the supported default. Current `origin/main` fixes several real-money blockers (current API shapes, price-shaped taker fees, CLOB fee metadata, geoblock preflight, documented WebSocket heartbeat, and `usdcSize` activity parsing), but it still does **not** prove profitability outside paper mode.
+
+Do not fund live mode until you have a venue-specific legal review, a held-out backtest with positive net expectancy after spread/slippage/fees/latency/no-fills, realistic paper/live execution reports from order-book snapshots, and a minimal-fund proof of the exact SDK/auth path. US/Georgia operators should treat the international CLOB endpoint as a venue mismatch, not a config problem.
+
 ## How It Works
 
 ```
@@ -117,6 +123,8 @@ POLY_PRIVATE_KEY=       # Your Polygon wallet private key (live mode only)
 POLY_API_KEY=           # L2 API key (auto-derived if blank)
 POLY_API_SECRET=        # L2 API secret
 POLY_API_PASSPHRASE=    # L2 API passphrase
+POLY_SIGNATURE_TYPE=    # Deposit-wallet signing type, if required
+POLY_FUNDER=            # Deposit-wallet funder address, if required
 BANKROLL=500            # Starting bankroll in USDC
 ```
 
@@ -155,7 +163,7 @@ All trading parameters are in `config.yaml`. The defaults are conservative:
 python -m polymarket_copier.main --mode paper
 ```
 
-**Live mode** (requires `POLY_PRIVATE_KEY` in `.env`):
+**Live mode** (requires `POLY_PRIVATE_KEY` in `.env`; not a profitability or legal-readiness signal):
 
 ```bash
 python -m polymarket_copier.main --mode live
