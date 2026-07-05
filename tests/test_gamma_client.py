@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polymarket_copier.api.gamma_client import GammaClient, _parse_market, _parse_resolve_time
+from polymarket_copier.api.gamma_client import GammaClient, _parse_fee_rate, _parse_market, _parse_resolve_time
 from polymarket_copier.models.types import Market
 
 
@@ -87,6 +87,13 @@ class TestGammaClient:
             price = await gamma_client.get_market_price("token-1")
             assert price is None
 
+    @pytest.mark.asyncio
+    async def test_get_market_fee_rate_from_clob_info(self, gamma_client):
+        session = _FakeSession({"fd": {"r": 0.05, "e": 2, "to": True}})
+        with patch.object(gamma_client, "_get_session", new_callable=AsyncMock, return_value=session):
+            fee_rate = await gamma_client.get_market_fee_rate("condition-1")
+            assert fee_rate == pytest.approx(0.05)
+
 
 class TestParseResolveTime:
     def test_iso_string(self):
@@ -139,7 +146,24 @@ class TestParseMarket:
         assert market.closed is False
         assert market.accepting_orders is True
         assert market.enable_order_book is True
+        assert market.fees_enabled is False
 
     def test_handles_missing_volume(self):
         market = _parse_market({"condition_id": "c1"})
         assert market.volume_24h == 0.0
+
+    def test_extracts_fee_metadata(self):
+        market = _parse_market({"condition_id": "c1", "feesEnabled": True, "feeRate": "0.07"})
+        assert market.fees_enabled is True
+        assert market.fee_rate == pytest.approx(0.07)
+
+
+class TestParseFeeRate:
+    def test_nested_fd_decimal_rate(self):
+        assert _parse_fee_rate({"fd": {"r": 0.04}}) == pytest.approx(0.04)
+
+    def test_basis_points_rate(self):
+        assert _parse_fee_rate({"base_fee": 30}) == pytest.approx(0.003)
+
+    def test_invalid_rate_returns_none(self):
+        assert _parse_fee_rate({"fd": {"r": "bad"}}) is None

@@ -23,6 +23,8 @@ class Market(BaseModel):
     restricted: bool = False
     accepting_orders: bool = True
     enable_order_book: bool = True
+    fees_enabled: bool = False
+    fee_rate: Optional[float] = None
 
 
 class Order(BaseModel):
