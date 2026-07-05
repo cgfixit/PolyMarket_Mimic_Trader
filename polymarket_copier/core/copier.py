@@ -585,7 +585,11 @@ class CopyTrader:
         try:
             # 10a. Place order.  M12: place_order_with_timeout handles GTC cancel+retry.
             try:
+                order_submitted_at = time.time()
+                order_submitted_monotonic = time.monotonic()
                 order_result = await self.clob.place_order_with_timeout(order)
+                order_filled_at = time.time()
+                order_filled_monotonic = time.monotonic()
             except InsufficientLiquidityError as e:
                 logger.info("Skip: insufficient liquidity — %s", e)
                 self._remove_pos_from_cache(pos)
@@ -686,6 +690,7 @@ class CopyTrader:
             token_id=event.token_id,
             side="BUY",
             size_usdc=round(copy_size_usdc, 4),
+            source_price=event.price,
             quoted_price=current_price,
             fill_price=fill_price,
             size_shares=round(pos.size_shares, 4),
@@ -693,6 +698,15 @@ class CopyTrader:
             sl_price=pos.sl_price,
             mode=self.config.mode,
             event_id=event.event_id,
+            source_timestamp=event.timestamp,
+            detected_at=round(event.detected_at, 6),
+            order_submitted_at=round(order_submitted_at, 6),
+            order_filled_at=round(order_filled_at, 6),
+            wall_age_seconds=round(wall_age, 6),
+            detection_latency_seconds=round(detection_latency, 6),
+            submit_latency_seconds=round(order_submitted_monotonic - event.detected_at, 6),
+            fill_latency_seconds=round(order_filled_monotonic - event.detected_at, 6),
+            decision_latency_seconds=round(decision_latency, 6),
         )
 
     @staticmethod
