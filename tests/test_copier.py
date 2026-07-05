@@ -995,6 +995,15 @@ class TestStructuredEvents:
         assert ev["mode"] == "paper"
         assert "tp_price" in ev and "sl_price" in ev
         assert ev["fee_source"] == "config"
+        assert ev["source_price"] == pytest.approx(0.50)
+        assert ev["source_timestamp"] > 0
+        assert ev["order_submitted_at"] > 0
+        assert ev["order_filled_at"] >= ev["order_submitted_at"]
+        assert ev["wall_age_seconds"] >= 0
+        assert ev["detection_latency_seconds"] >= 0
+        assert ev["submit_latency_seconds"] >= 0
+        assert ev["fill_latency_seconds"] >= ev["submit_latency_seconds"]
+        assert ev["decision_latency_seconds"] >= ev["fill_latency_seconds"]
 
     @pytest.mark.asyncio
     async def test_position_opened_event_uses_clob_fee_rate(self, copier, gamma):
