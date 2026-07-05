@@ -159,7 +159,7 @@ def _as_bool(value: object, default: bool) -> bool:
     return bool(value)
 
 
-def _coerce_fee_rate(value: object) -> Optional[float]:
+def _coerce_fee_rate(value: Any) -> Optional[float]:
     if value is None:
         return None
     try:

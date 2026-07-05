@@ -7,6 +7,7 @@ import logging
 import math
 import time
 import uuid
+from typing import Any
 
 from polymarket_copier.api.clob_client import (
     ClobClient,
@@ -171,7 +172,7 @@ class CopyTrader:
         )
 
     @staticmethod
-    def _coerce_fee_rate(value: object) -> float | None:
+    def _coerce_fee_rate(value: Any) -> float | None:
         if value is None:
             return None
         try:
