@@ -67,6 +67,22 @@ class TestParseTradeEvent:
         assert event is not None
         assert event.trade_type == TradeType.BUY
 
+    def test_parse_prefers_usdc_size_for_copy_notional(self):
+        raw = {
+            "id": "t-size",
+            "type": "trade",
+            "side": "BUY",
+            "market": "mkt-a",
+            "asset": "tok-a",
+            "price": "0.50",
+            "size": "100",
+            "usdcSize": "50",
+            "timestamp": 1_700_000_000,
+        }
+        event = _parse_trade_event("0xabc", raw)
+        assert event is not None
+        assert event.size_usdc == pytest.approx(50.0)
+
     def test_unknown_side_returns_none(self):
         raw = {
             "id": "t4",
@@ -364,8 +380,10 @@ class _FakeRespMonitor:
 class _FakeSessionMonitor:
     def __init__(self, data=None):
         self._data = data or []
+        self.requests = []
 
     def get(self, url, params=None):
+        self.requests.append((url, params))
         return _FakeRespMonitor(self._data)
 
 
@@ -407,6 +425,23 @@ class TestRateLimiterOnPollPath:
         )
         await monitor._poll_wallet(_FakeSessionMonitor([]), "0xwhale")
         assert len(acquired) == 1, "Rate limiter was not acquired during _poll_wallet"
+
+    @pytest.mark.asyncio
+    async def test_poll_wallet_filters_to_trade_activity(self):
+        monitor = TradeMonitor(
+            tracked_wallets=["0xWHALE"],
+            on_trade=_noop_trade,
+            prime_on_start=True,
+        )
+        session = _FakeSessionMonitor([])
+        await monitor._poll_wallet(session, "0xwhale")
+        assert session.requests[0][1] == {
+            "user": "0xwhale",
+            "limit": 50,
+            "type": "TRADE",
+            "sortBy": "TIMESTAMP",
+            "sortDirection": "DESC",
+        }
 
     @pytest.mark.asyncio
     async def test_detected_at_set_during_real_poll(self):
