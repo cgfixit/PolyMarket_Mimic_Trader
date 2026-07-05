@@ -53,7 +53,7 @@ class TestDataClient:
     async def test_get_wallet_activity_params(self, data_client):
         with patch.object(data_client, "_get", new_callable=AsyncMock, return_value=[]) as mock_get:
             await data_client.get_wallet_activity("0xabc", limit=50)
-            mock_get.assert_called_once_with("/activity", params={"user": "0xabc", "limit": 50})
+            mock_get.assert_called_once_with("/activity", params={"user": "0xabc", "limit": 50, "type": "TRADE"})
 
     @pytest.mark.asyncio
     async def test_close_external_session_not_closed(self):

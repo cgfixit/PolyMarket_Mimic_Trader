@@ -69,7 +69,7 @@ class DataClient:
 
     async def get_wallet_activity(self, address: str, limit: int = 100) -> list[dict[str, Any]]:
         """Fetch on-chain trade activity for a specific wallet address."""
-        params: dict[str, Any] = {"user": address, "limit": limit}
+        params: dict[str, Any] = {"user": address, "limit": limit, "type": "TRADE"}
         data = await self._get("/activity", params=params)
         if isinstance(data, list):
             return data

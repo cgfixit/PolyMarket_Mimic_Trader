@@ -499,7 +499,13 @@ class TradeMonitor:
     ) -> None:
         """Fetch recent activity for a single wallet and emit TradeEvents for new trades."""
         url = f"{self._data_api_base}/activity"
-        params: Dict[str, Any] = {"user": wallet, "limit": _MAX_TRADES_PER_POLL}
+        params: Dict[str, Any] = {
+            "user": wallet,
+            "limit": _MAX_TRADES_PER_POLL,
+            "type": "TRADE",
+            "sortBy": "TIMESTAMP",
+            "sortDirection": "DESC",
+        }
 
         async with self._rate_limiter:
             async with session.get(url, params=params) as resp:
@@ -589,7 +595,7 @@ def _parse_trade_event(wallet: str, raw: dict) -> Optional[TradeEvent]:
         token_id = str(raw.get("asset", raw.get("tokenId", "")))
         side_raw = activity_side(raw)
         price = float(raw.get("price", 0))
-        size = float(raw.get("size", raw.get("usdcSize", 0)))
+        size = float(raw.get("usdcSize", raw.get("size", 0)))
         outcome = raw.get("outcomeLabel", "YES" if raw.get("outcomeIndex", 0) == 0 else "NO")
 
         ts_raw = raw.get("timestamp", raw.get("createdAt", ""))
