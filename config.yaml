@@ -33,7 +33,7 @@ copy_trading:
   max_trade_age_seconds: 12
   mirror_source_exits: true
   paper_fill_slippage_pct: 0.005
-  paper_taker_fee_pct: 0.02
+  paper_taker_fee_rate: 0.02
   kelly_enabled: false
   kelly_fraction_multiplier: 0.25
   kelly_min_trades: 50            # M3: raised 20 -> 50 so early luck can't oversize

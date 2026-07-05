@@ -143,7 +143,7 @@ All trading parameters are in `config.yaml`. The defaults are conservative:
 | `fail_closed_on_missing_data` | true | Skip a copy when market metadata or price can't be verified |
 | `mirror_source_exits` | true | Exit when the tracked trader exits (SOURCE_EXIT) |
 | `paper_fill_slippage_pct` | 0.005 | Half-spread slippage in paper mode (~0.5%) |
-| `paper_taker_fee_pct` | 0.02 | Taker fee in paper mode (Polymarket CLOB rate ~2%) |
+| `paper_taker_fee_rate` | 0.02 | Paper-mode taker fee rate; actual fee is price-shaped: `rate * price * (1 - price)` |
 | `metrics_enabled` | false | Enable Prometheus metrics scrape endpoint |
 | `metrics_port` | 9090 | Port for Prometheus scrape endpoint |
 
