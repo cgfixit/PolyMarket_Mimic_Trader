@@ -42,7 +42,14 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 import aiohttp
 from aiolimiter import AsyncLimiter
 
-from polymarket_copier.utils.activity import activity_side
+from polymarket_copier.utils.activity import (
+    activity_id,
+    activity_market_id,
+    activity_notional_usdc,
+    activity_side,
+    activity_token_id,
+    is_trade_activity,
+)
 
 # websockets is an optional hard-dep; linter-safe import with graceful fallback
 try:
@@ -562,10 +569,10 @@ class TradeMonitor:
         new_trades = []
 
         for item in activity:
-            if item.get("type", "").lower() not in ("trade", "buy", "sell"):
+            if not is_trade_activity(item):
                 continue
 
-            trade_id = str(item.get("id") or item.get("transactionHash", ""))
+            trade_id = activity_id(item)
             if not trade_id or trade_id in seen:
                 continue
 
@@ -590,12 +597,12 @@ def _parse_trade_event(wallet: str, raw: dict) -> Optional[TradeEvent]:
     Returns None if the record is missing required fields or is malformed.
     """
     try:
-        trade_id = str(raw.get("id") or raw.get("transactionHash", ""))
-        market_id = str(raw.get("market", raw.get("conditionId", "")))
-        token_id = str(raw.get("asset", raw.get("tokenId", "")))
+        trade_id = activity_id(raw)
+        market_id = activity_market_id(raw)
+        token_id = activity_token_id(raw)
         side_raw = activity_side(raw)
         price = float(raw.get("price", 0))
-        size = float(raw.get("usdcSize", raw.get("size", 0)))
+        size = activity_notional_usdc(raw)
         outcome = raw.get("outcomeLabel", "YES" if raw.get("outcomeIndex", 0) == 0 else "NO")
 
         ts_raw = raw.get("timestamp", raw.get("createdAt", ""))
