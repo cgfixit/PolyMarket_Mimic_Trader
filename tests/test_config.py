@@ -248,3 +248,7 @@ class TestShippedConfigMatchesCodeDefaults:
 
     def test_min_trades_matches_code_default(self, shipped_config):
         assert shipped_config.trader_selection.min_trades == AppConfig().trader_selection.min_trades
+
+    def test_shipped_config_uses_canonical_taker_fee_rate_key(self, shipped_config):
+        assert shipped_config.copy_trading.paper_taker_fee_pct is None
+        assert shipped_config.copy_trading.paper_taker_fee_rate == AppConfig().copy_trading.paper_taker_fee_rate
