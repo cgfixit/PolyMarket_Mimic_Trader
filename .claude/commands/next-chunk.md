@@ -1,27 +1,8 @@
 # /next-chunk — Implement the Next Improvement
 
-Find the highest-priority unimplemented item from `next_steps.md` and implement it as a clean PR.
+This command has moved. Follow `.claude/skills/next-chunk/SKILL.md` as the source of truth —
+it reads `next_steps.md` fresh (never trust a cached backlog structure), dedupes against open
+PRs, implements one item with tests, gates on the preflight skill, and opens a single-concern
+draft PR.
 
-## What this does
-
-1. Read `next_steps.md` to identify the next unimplemented item (Tier A first, then B, then C)
-2. Check `git log origin/main --oneline` to confirm it hasn't already been merged
-3. Create a new branch: `git checkout -b feat/<short-name> origin/main`
-4. Implement the improvement with tests
-5. Run the full test suite + lint
-6. Commit with a clear message
-7. Push and open a draft PR
-
-## Usage
-
-```
-/next-chunk
-```
-
-Optional: `/next-chunk F3` to implement a specific item by ID (e.g., F3 = Graduated position sizing).
-
-## Notes
-
-- Always branches from `origin/main` to avoid conflicts with in-flight PRs
-- Creates a draft PR so you can review before merging
-- If the item is large, proposes a scoped subset and asks before implementing
+Optional argument: a backlog item ID from `next_steps.md` (e.g. `/next-chunk R2`).

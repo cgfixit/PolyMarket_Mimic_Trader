@@ -25,13 +25,14 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-All 144+ tests must pass before submitting a PR. Tests run fully offline with mocked API responses.
+All tests (510 as of July 2026) must pass before submitting a PR. Tests run fully offline with mocked API responses; CI runs `pytest -m "not integration"` on Python 3.10, 3.11, and 3.12.
 
 ### 4. Run the linter
 
 ```bash
 pip install ruff
 ruff check .
+ruff format --check .   # CI enforces formatting too — a bare `ruff check` alone will not catch this
 ```
 
 ## Development Workflow
@@ -49,6 +50,7 @@ ruff check .
    ```bash
    pytest -v              # All tests pass
    ruff check .           # No lint errors
+   ruff format --check .  # Formatting matches (CI gate)
    ```
 
 5. **Commit with a clear message** describing *why*, not just *what*:
@@ -73,7 +75,7 @@ ruff check .
 
 ### Style
 
-- **Python 3.9+** compatibility required (use `from __future__ import annotations`)
+- **Python 3.10+** compatibility required (`requires-python = ">=3.10"` in `pyproject.toml`; use `from __future__ import annotations`)
 - **Ruff** for linting — the project config is in `pyproject.toml`
 - **No comments explaining *what*** — use clear names instead. Only comment *why* when it's non-obvious.
 - **Async/await correctness** — if a callback is `async def`, the caller must `await` it. The integration tests in `test_integration.py` exist specifically to catch un-awaited coroutine regressions.
