@@ -10,10 +10,11 @@ Start here:
 - Use `.codex/skills/refactor/SKILL.md` when asked to refactor structure or run an iterative speed/refactor loop.
 - Use `.codex/commands/optimizer.md` for read-only audit and quality-review passes.
 - Use Ponytail when the user asks for the shortest safe fix or when deleting over-engineering.
+- Claude-side skills live in `.claude/skills/`: `preflight` (local CI parity gate), `fact-check` (claims ledger), `next-chunk` (backlog → draft PR), `api-drift-audit` (read-only Polymarket API drift probe).
 
 Behavioral baseline:
 
-- Preserve the safety rules in `CLAUDE.md`, especially range-relative TP/SL, exposure rollback, cold-start guards, and the no-retry rule for failed orders.
+- Preserve the safety rules in `CLAUDE.md`, especially range-relative TP/SL, exposure rollback, cold-start guards, and the order retry matrix (FOK entries are never retried; resting GTC/GTD orders retry once for the confirmed-unfilled remainder; exit orders retry up to 3 times — see `CLAUDE.md` "Money math").
 - Use async-safe patterns. Avoid blocking calls, unbounded polling, or sync I/O in hot event-loop paths.
 - Do not alter trading math, position sizing, exchange assumptions, or live-trading behavior without explicit follow-up.
 - Prefer small diffs at the shared choke point instead of patching symptoms in multiple callers.
@@ -23,14 +24,13 @@ Behavioral baseline:
 
 Validation commands:
 
-- `pip install -r requirements.txt`
-- `pytest -v`
-- `pytest -v -m "not integration"`
+- `pip install -r requirements.txt` (plus `pip install pytest-cov mypy ruff` — CI installs these ad-hoc; they are not in requirements.txt)
+- `pytest -v -m "not integration"` (what CI runs; the `integration` marker is applied to zero tests)
 - `pytest tests/test_risk_manager.py -v`
-- `powershell -File scripts/check-lint.ps1`
-- `powershell -File scripts/check-lint.ps1 -Fix`
-- `python -m mypy polymarket_copier`
+- `ruff check .` and `ruff format --check .` (both are CI gates; `scripts/check-lint.ps1` is a Windows PowerShell wrapper around the same two commands)
+- `mypy polymarket_copier --ignore-missing-imports --no-strict-optional` (exact CI flags)
 - `python -m polymarket_copier.main --mode paper --config config.yaml`
+- Or run everything at once: `bash .claude/skills/preflight/preflight.sh`
 
 Repo facts:
 

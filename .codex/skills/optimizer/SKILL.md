@@ -223,8 +223,9 @@ static validation such as markdown review or shell syntax checks.
 - Do not alter trading math, position sizing, or live-trading behavior without
   explicit follow-up.
 - Preserve the repo safety invariants: range-relative TP/SL, exposure rollback
-  on failed orders, no retry of failed live orders, awaited async callbacks,
-  cold-start wallet baselines, and paper mode as the default.
+  on failed orders, the deliberate order retry matrix (FOK entries never retried;
+  GTC/GTD remainder retried once; exits up to 3 times — see CLAUDE.md), awaited
+  async callbacks, cold-start wallet baselines, and paper mode as the default.
 - Workflow enhancements must not require a new license, secret, or key.
 - Never hardcode secrets or put `.env` values in logs, docs, tests, or commits.
 
