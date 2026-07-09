@@ -10,7 +10,9 @@ optional `py-clob-client` dependency or any network access.
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
+from types import ModuleType
 from unittest.mock import AsyncMock
 
 import pytest
@@ -57,6 +59,15 @@ def sell_order(price=0.50, size_usdc=100.0) -> Order:
         price=price,
         size_usdc=size_usdc,
     )
+
+
+def _install_fake_py_clob_client(monkeypatch, fake_client_cls) -> None:
+    pkg = ModuleType("py_clob_client")
+    client_mod = ModuleType("py_clob_client.client")
+    client_mod.ClobClient = fake_client_cls
+    pkg.client = client_mod
+    monkeypatch.setitem(sys.modules, "py_clob_client", pkg)
+    monkeypatch.setitem(sys.modules, "py_clob_client.client", client_mod)
 
 
 class TestPaperMode:
@@ -129,6 +140,75 @@ class TestLiveModeGuards:
     def test_init_live_client_without_key_raises(self, live_client):
         with pytest.raises(ValueError, match="POLY_PRIVATE_KEY"):
             live_client._init_live_client()
+
+    def test_init_live_client_uses_provided_l2_creds_and_deposit_wallet_args(self, monkeypatch):
+        """Guard the full provided-creds path, including signature_type=3 funder passthrough."""
+
+        calls: dict[str, object] = {}
+
+        class FakeVenueClient:
+            def __init__(self, host, **kwargs):
+                calls["host"] = host
+                calls["kwargs"] = kwargs
+
+            def set_api_creds(self, creds):
+                calls["creds"] = creds
+
+            def create_or_derive_api_creds(self):
+                raise AssertionError("create_or_derive_api_creds should not run when all L2 creds are configured")
+
+        _install_fake_py_clob_client(monkeypatch, FakeVenueClient)
+        client = ClobClient(
+            AppConfig(
+                mode="live",
+                bankroll=10_000,
+                private_key="0x" + "1" * 64,
+                api_key="api-key",
+                api_secret="api-secret",
+                api_passphrase="api-passphrase",
+                signature_type=3,
+                funder="0xfunder",
+            )
+        )
+
+        client._init_live_client()
+
+        assert calls["host"] == "https://clob.polymarket.com"
+        assert calls["kwargs"] == {
+            "key": "0x" + "1" * 64,
+            "chain_id": 137,
+            "signature_type": 3,
+            "funder": "0xfunder",
+        }
+        creds = calls["creds"]
+        assert creds.api_key == "api-key"
+        assert creds.api_secret == "api-secret"
+        assert creds.api_passphrase == "api-passphrase"
+
+    def test_init_live_client_derives_api_creds_when_not_provided(self, monkeypatch):
+        """Guard the fallback branch that derives CLOB API creds from the wallet key."""
+
+        derived = object()
+        calls: dict[str, object] = {"derive_calls": 0}
+
+        class FakeVenueClient:
+            def __init__(self, *_args, **_kwargs):
+                return None
+
+            def set_api_creds(self, creds):
+                calls["creds"] = creds
+
+            def create_or_derive_api_creds(self):
+                calls["derive_calls"] += 1
+                return derived
+
+        _install_fake_py_clob_client(monkeypatch, FakeVenueClient)
+        client = ClobClient(AppConfig(mode="live", bankroll=10_000, private_key="0x" + "2" * 64))
+
+        client._init_live_client()
+
+        assert calls["derive_calls"] == 1
+        assert calls["creds"] is derived
 
     @pytest.mark.asyncio
     async def test_live_buy_thin_book_raises_before_auth(self, live_client):
