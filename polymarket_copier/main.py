@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import signal
 import sys
 import time
@@ -20,7 +21,7 @@ from polymarket_copier.core.monitor import TradeMonitor
 from polymarket_copier.core.portfolio import PortfolioManager
 from polymarket_copier.core.risk_manager import RiskConfig, RiskManager
 from polymarket_copier.core.tracker import TrackerClient, TrackerConfig
-from polymarket_copier.utils.logger import setup_logger
+from polymarket_copier.utils.logger import log_event, setup_logger
 
 POLYMARKET_GEOBLOCK_URL = "https://polymarket.com/api/geoblock"
 
@@ -87,6 +88,38 @@ async def _enforce_live_geoblock_preflight(config, session: aiohttp.ClientSessio
     logger.info("Polymarket geoblock preflight passed for %s%s", country, f"-{region}" if region else "")
 
 
+def _log_live_mode_readiness_warning(config, logger) -> None:
+    """Emit a structured startup warning for the current live-mode auth path."""
+    if config.mode != "live":
+        return
+
+    creds = [config.api_key, config.api_secret, config.api_passphrase]
+    if all(creds):
+        api_credentials = "provided"
+    elif any(creds):
+        api_credentials = "partial"
+    else:
+        api_credentials = "derived"
+
+    log_event(
+        logger,
+        "live_mode_readiness_warning",
+        level=logging.WARNING,
+        msg=(
+            "Live mode is still experimental: this repo uses py-clob-client while current "
+            "official docs center py-clob-client-v2 and deposit-wallet signature_type=3 for "
+            "new API users; startup success is not legal or profitability clearance"
+        ),
+        client_sdk="py-clob-client",
+        docs_sdk="py-clob-client-v2",
+        docs_recommend_signature_type=3,
+        signature_type=config.signature_type,
+        funder_configured=bool(config.funder),
+        api_credentials=api_credentials,
+        forward_paper_gate_enabled=config.forward_paper_gate_enabled,
+    )
+
+
 async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["paper", "live"]] = None) -> None:
     config = load_config(config_path=config_path)
     if mode:
@@ -151,6 +184,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
         await portfolio.close()
         await shared_session.close()
         raise
+    _log_live_mode_readiness_warning(config, logger)
 
     startup_positions = await portfolio.get_open_positions()
 
