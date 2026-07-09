@@ -63,3 +63,13 @@ class TestCopyTraderAddressNormalization:
         copier.update_tracker_win_rates({"0xAbCd1234": 0.65})
         # event.wallet_address comes from monitor (lowercased)
         assert copier._tracker_win_rates.get("0xabcd1234") == 0.65
+
+    def test_demoted_trader_stays_filtered_on_tracker_refresh(self):
+        copier = self._make_copier()
+        copier._demoted_traders.add("0xabcd")
+        copier.update_tracker_win_rates({"0xABCD": 0.65, "0xEFGH": 0.70})
+        copier.update_tracker_mean_pnl({"0xABCD": 0.12, "0xEFGH": 0.08})
+        assert "0xabcd" not in copier._tracker_win_rates
+        assert "0xabcd" not in copier._tracker_mean_pnl
+        assert copier._tracker_win_rates == {"0xefgh": 0.70}
+        assert copier._tracker_mean_pnl == {"0xefgh": 0.08}
