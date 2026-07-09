@@ -180,6 +180,8 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
         logger.error("No suitable traders found. Check trader_selection thresholds.")
         await portfolio.close()
         await gamma_client.close()
+        await clob_client.close()
+        await shared_session.close()
         return
 
     wallets = tracker.top_wallet_addresses()
@@ -219,9 +221,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
         logger.info("Shutdown signal received")
         shutdown_event.set()
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, handle_signal)
+    _install_shutdown_handlers(asyncio.get_running_loop(), handle_signal)
 
     async def supervise(name: str, coro_factory, max_restarts: int = 10) -> None:
         """Restart a crashed loop with exponential backoff. Gives up after max_restarts."""
@@ -338,8 +338,34 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
         logger.info("\n%s", summary)
         await portfolio.close()
         await gamma_client.close()
+        await clob_client.close()
         await shared_session.close()
         logger.info("Bot shut down cleanly")
+
+
+def _install_shutdown_handlers(loop: asyncio.AbstractEventLoop, handle_signal) -> None:
+    """Register SIGINT/SIGTERM to stop the bot.
+
+    ``loop.add_signal_handler`` is not implemented on Windows' ProactorEventLoop
+    (raises NotImplementedError). Fall back to ``signal.signal`` so paper/live
+    mode can still run locally on Windows.
+    """
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, handle_signal)
+        return
+    except NotImplementedError:
+        pass
+
+    def _sync_handler(signum, frame) -> None:  # noqa: ARG001 — signal API
+        handle_signal()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _sync_handler)
+        except (ValueError, OSError):
+            # SIGTERM is not always available / settable on Windows.
+            pass
 
 
 def main() -> None:
