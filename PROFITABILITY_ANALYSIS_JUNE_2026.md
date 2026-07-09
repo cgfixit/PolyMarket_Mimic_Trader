@@ -1,7 +1,8 @@
 # PolyMarket_Mimic_Trader Real-Money Feasibility
 
-**Updated:** 2026-07-05
-**Code baseline:** `origin/main` at `bc5f107` after PRs #82, #84, #85, #86, #87, #88, and #89.
+**Updated:** 2026-07-09
+**Repo snapshot inspected for this recheck:** `aa3b552` (`codex/research-polymarket-api-20260709`)
+**Mainline baseline referenced below:** `origin/main` at `bc5f107` after PRs #82, #84, #85, #86, #87, #88, and #89.
 
 ## Verdict
 
@@ -10,6 +11,12 @@
 The latest main branch is materially better than the June review: the bot now uses current Polymarket API shapes, price-shaped taker-fee math, CLOB fee metadata, live geoblock preflight, documented WebSocket heartbeat behavior, `usdcSize` activity notional parsing, timing telemetry, and the canonical `paper_taker_fee_rate` config key.
 
 Those fixes remove several stale implementation blockers. They do **not** prove the strategy is profitable, and they do **not** make the targeted international CLOB a legal or practical real-money venue for a US or Georgia-based operator.
+
+## Current-Source Recheck (2026-07-09)
+
+- **[verified external fact]** Current Polymarket trading docs still recommend `py-clob-client-v2`, L1-to-L2 auth, and deposit-wallet `signature_type=3` plus funder/deposit-wallet address for new API users.
+- **[repo fact]** This repo still pins `py-clob-client>=0.34,<1.0` and its live client still initializes `py-clob-client`, although it now fail-closes when `POLY_SIGNATURE_TYPE=3` is missing `POLY_FUNDER`.
+- **[inference]** That keeps live-mode auth in a documented-risk state rather than current-doc parity. The overall verdict stays conditional NO rather than getting better or worse.
 
 ## What Is Fixed On Main
 
@@ -30,7 +37,7 @@ Those fixes remove several stale implementation blockers. They do **not** prove 
 3. **Paper mode is not a go-live signal.** Paper mode is useful for plumbing and telemetry, but it still cannot prove live fill quality, partial/no-fill selection bias, or thin-book market impact.
 4. **The copied signal is delayed and public.** The bot copies after public activity appears. Skilled Polymarket traders appear to earn much of their edge by reacting first; a delayed copier may buy after the source trade has already moved the book.
 5. **Trader metrics remain biased.** Worthless-expiry losses and unredeemed positions are still hard to reconstruct from the current activity stream, so historical ROI/win-rate inputs can be inflated.
-6. **SDK/auth risk remains.** The repo has deposit-wallet config, but the `py-clob-client-v2` migration and real deposit-wallet order-path proof remain open work.
+6. **SDK/auth risk remains.** The repo has deposit-wallet config, but the official current-doc path is still `py-clob-client-v2` plus `signature_type=3` for new API users, while this repo's live client remains on `py-clob-client`; migration and real deposit-wallet order-path proof remain open work.
 
 ## Minimum Bar Before Real Money
 
