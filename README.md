@@ -11,6 +11,7 @@ Only ~7.6% of Polymarket wallets are profitable, and academic research (Gómez-C
 ## Real-Money Status
 
 Paper mode is the supported default. Current `origin/main` fixes several real-money blockers (current API shapes, price-shaped taker fees, CLOB fee metadata, geoblock preflight, documented WebSocket heartbeat, and `usdcSize` activity parsing), but it still does **not** prove profitability outside paper mode.
+Official Polymarket docs currently recommend `py-clob-client-v2` and the deposit-wallet `signature_type=3` flow for new API users; this repo's live client still uses `py-clob-client>=0.34,<1.0`, so current-doc auth parity is not complete.
 
 Do not fund live mode until you have a venue-specific legal review, a held-out backtest with positive net expectancy after spread/slippage/fees/latency/no-fills, realistic paper/live execution reports from order-book snapshots, and a minimal-fund proof of the exact SDK/auth path. US/Georgia operators should treat the international CLOB endpoint as a venue mismatch, not a config problem.
 
