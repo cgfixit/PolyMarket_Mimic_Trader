@@ -258,6 +258,15 @@ class AppConfig(BaseModel):
     detection_stall_alert_seconds: float = 0.0
 
 
+def validate_live_config(config: AppConfig) -> None:
+    """Validate settings that become mandatory only in live mode."""
+    if config.mode == "live" and not config.private_key:
+        raise ConfigError("POLY_PRIVATE_KEY required for live mode")
+
+    if config.mode == "live" and config.signature_type == 3 and not config.funder:
+        raise ConfigError("POLY_FUNDER required when POLY_SIGNATURE_TYPE=3 (deposit-wallet signing)")
+
+
 def load_config(
     config_path: Optional[str] = None,
     env_path: Optional[str] = None,
@@ -299,10 +308,5 @@ def load_config(
     if config.bankroll <= 0:
         raise ConfigError("BANKROLL must be positive")
 
-    if config.mode == "live" and not config.private_key:
-        raise ConfigError("POLY_PRIVATE_KEY required for live mode")
-
-    if config.mode == "live" and config.signature_type == 3 and not config.funder:
-        raise ConfigError("POLY_FUNDER required when POLY_SIGNATURE_TYPE=3 (deposit-wallet signing)")
-
+    validate_live_config(config)
     return config

@@ -13,7 +13,7 @@ import aiohttp
 
 from polymarket_copier.api.clob_client import ClobClient
 from polymarket_copier.api.gamma_client import GammaClient
-from polymarket_copier.config import ConfigError, load_config
+from polymarket_copier.config import ConfigError, load_config, validate_live_config
 from polymarket_copier.core import metrics
 from polymarket_copier.core.copier import CopyTrader
 from polymarket_copier.core.monitor import TradeMonitor
@@ -60,6 +60,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
     config = load_config(config_path=config_path)
     if mode:
         config.mode = mode
+        validate_live_config(config)
 
     logger = setup_logger(level=config.logging.level, log_file=config.logging.file)
 

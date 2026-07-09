@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from polymarket_copier.config import AppConfig, ConfigError
-from polymarket_copier.main import POLYMARKET_GEOBLOCK_URL, _enforce_live_geoblock_preflight
+from polymarket_copier.main import POLYMARKET_GEOBLOCK_URL, _enforce_live_geoblock_preflight, run_bot
 
 
 class _FakeResp:
@@ -86,3 +86,13 @@ async def test_geoblock_preflight_fails_closed_on_request_error(logger):
 
     with pytest.raises(ConfigError, match="failed"):
         await _enforce_live_geoblock_preflight(AppConfig(mode="live"), session, logger)
+
+
+@pytest.mark.asyncio
+async def test_cli_live_override_revalidates_live_credentials(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("mode: paper\n")
+    monkeypatch.delenv("POLY_PRIVATE_KEY", raising=False)
+
+    with pytest.raises(ConfigError, match="POLY_PRIVATE_KEY required"):
+        await run_bot(config_path=str(config_file), mode="live")
