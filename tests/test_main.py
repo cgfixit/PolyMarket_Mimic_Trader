@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from polymarket_copier.main import (
     POLYMARKET_GEOBLOCK_URL,
     _enforce_live_geoblock_preflight,
     _install_shutdown_handlers,
+    _log_live_mode_readiness_warning,
     enforce_forward_paper_gate,
     run_bot,
 )
@@ -51,7 +53,7 @@ class _FakeSession:
 
 @pytest.fixture
 def logger():
-    return SimpleNamespace(info=lambda *args, **kwargs: None)
+    return SimpleNamespace(info=lambda *args, **kwargs: None, log=lambda *args, **kwargs: None)
 
 
 @pytest.mark.asyncio
@@ -128,6 +130,43 @@ def test_install_shutdown_handlers_falls_back_when_add_signal_handler_missing(mo
     assert signal_mod.SIGINT in registered
     # SIGTERM may or may not be registered depending on platform; at least one ok.
     assert registered
+
+
+def test_live_mode_readiness_warning_is_structured():
+    calls: list[tuple[int, str, dict]] = []
+
+    class _Logger:
+        def log(self, level, msg, *, extra=None):
+            calls.append((level, msg, extra or {}))
+
+    cfg = AppConfig(
+        mode="live",
+        signature_type=3,
+        funder="0xfunder",
+        forward_paper_gate_enabled=True,
+    )
+    _log_live_mode_readiness_warning(cfg, _Logger())
+
+    assert len(calls) == 1
+    level, msg, extra = calls[0]
+    assert level == logging.WARNING
+    assert "py-clob-client-v2" in msg
+    assert extra["data"]["event"] == "live_mode_readiness_warning"
+    assert extra["data"]["signature_type"] == 3
+    assert extra["data"]["funder_configured"] is True
+    assert extra["data"]["api_credentials"] == "derived"
+
+
+def test_live_mode_readiness_warning_skips_paper_mode():
+    calls: list[tuple[int, str, dict]] = []
+
+    class _Logger:
+        def log(self, level, msg, *, extra=None):
+            calls.append((level, msg, extra or {}))
+
+    _log_live_mode_readiness_warning(AppConfig(mode="paper"), _Logger())
+
+    assert calls == []
 
 
 class TestForwardPaperGate:
