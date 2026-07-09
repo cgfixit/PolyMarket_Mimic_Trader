@@ -40,6 +40,34 @@ def make_stats(
     )
 
 
+class _FakeActivityResponse:
+    def __init__(self, data, status=200, reason="OK"):
+        self._data = data
+        self.status = status
+        self.reason = reason
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def json(self):
+        return self._data
+
+
+class _FakeActivitySession:
+    def __init__(self, data, status=200, reason="OK"):
+        self.data = data
+        self.status = status
+        self.reason = reason
+        self.requests = []
+
+    def get(self, url, params=None):
+        self.requests.append((url, params))
+        return _FakeActivityResponse(self.data, self.status, self.reason)
+
+
 class TestTraderStats:
     def test_mean_pnl(self):
         stats = make_stats(pnl_list=[10.0, 20.0, 30.0])
@@ -519,6 +547,36 @@ class TestTrackerAccessors:
     def test_needs_rebalance_true_when_never_refreshed(self):
         # _last_refresh defaults to 0.0, so the elapsed interval is enormous.
         assert TrackerClient().needs_rebalance is True
+
+
+class TestTrackerActivityFetch:
+    @pytest.mark.asyncio
+    async def test_fetch_activity_uses_trade_filter_and_sort(self):
+        client = TrackerClient(config=TrackerConfig(activity_fetch_limit=25), data_api="https://data.example")
+        session = _FakeActivitySession([{"id": "t1"}])
+
+        result = await client._fetch_activity(session, "0xabc")
+
+        assert result == [{"id": "t1"}]
+        assert session.requests == [
+            (
+                "https://data.example/activity",
+                {
+                    "user": "0xabc",
+                    "limit": 25,
+                    "type": "TRADE",
+                    "sortBy": "TIMESTAMP",
+                    "sortDirection": "DESC",
+                },
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_fetch_activity_accepts_wrapped_responses(self):
+        client = TrackerClient(data_api="https://data.example")
+        session = _FakeActivitySession({"activity": [{"id": "t1"}]})
+
+        assert await client._fetch_activity(session, "0xabc") == [{"id": "t1"}]
 
 
 class TestStatsCache:

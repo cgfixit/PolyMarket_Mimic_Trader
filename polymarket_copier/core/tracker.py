@@ -554,10 +554,16 @@ class TrackerClient:
     ) -> List[dict]:
         """
         Fetch recent trade activity for a wallet.
-        API: GET /activity?user={address}&limit=N
+        API: GET /activity?user={address}&limit=N&type=TRADE
         """
         url = f"{self._data_api}/activity"
-        params: Dict[str, Any] = {"user": address, "limit": self.cfg.activity_fetch_limit}
+        params: Dict[str, Any] = {
+            "user": address,
+            "limit": self.cfg.activity_fetch_limit,
+            "type": "TRADE",
+            "sortBy": "TIMESTAMP",
+            "sortDirection": "DESC",
+        }
 
         try:
             async with session.get(url, params=params) as resp:
@@ -569,7 +575,12 @@ class TrackerClient:
                         resp.reason,
                     )
                     return []
-                return await resp.json()
+                data = await resp.json()
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    return data.get("activity", data.get("data", []))
+                return []
         except Exception as exc:
             logger.warning("Activity fetch failed for %s: %s", address[:10], exc)
             return []
