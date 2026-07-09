@@ -381,7 +381,14 @@ class TradeMonitor:
                     await heartbeat
 
     async def _ws_heartbeat(self, ws) -> None:
-        """Send Polymarket's application-level WS ping payload."""
+        """Send Polymarket's application-level WS ping every _WS_PING_INTERVAL s.
+
+        Wait for a subscription-update event or the full interval. On timeout,
+        send text ``PING`` (docs: market channel expects app-level PING ~10s).
+        On an early wake, apply the subscription change and restart the wait —
+        do not add a second sleep, which previously doubled the PING cadence
+        to ~20s when idle.
+        """
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(
@@ -389,13 +396,13 @@ class TradeMonitor:
                     timeout=_WS_PING_INTERVAL,
                 )
             except asyncio.TimeoutError:
-                pass
+                if self._stop_event.is_set():
+                    return
+                await ws.send("PING")
+                continue
+            # Subscription change woke us before the interval elapsed.
             self._subscription_update_requested.clear()
             await self._maybe_update_subscription(ws)
-            if self._stop_event.is_set():
-                return
-            await asyncio.sleep(_WS_PING_INTERVAL)
-            await ws.send("PING")
 
     async def _ws_send_subscription(self, ws, token_ids: List[str]) -> None:
         """Send a Market subscription message to the Polymarket CLOB WebSocket."""
