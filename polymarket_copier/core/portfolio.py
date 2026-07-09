@@ -83,8 +83,28 @@ class PortfolioManager:
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL;")
         await self._db.executescript(_SCHEMA)
+        await self._migrate()
         await self._db.commit()
         logger.info("Portfolio DB initialized: %s", self._db_path)
+
+    async def _migrate(self) -> None:
+        """Additive schema migrations for databases created before a column existed.
+
+        `mode` tags each position with the trading mode it was opened under, so
+        the forward-paper gate (live mode requires N closed PAPER trades with
+        positive net PnL) can tell paper evidence from live evidence. Added
+        WITHOUT a DEFAULT: a database created before this column existed may
+        contain positions opened under LIVE mode (the bot has always supported
+        it), and defaulting those rows to 'paper' would let them silently
+        satisfy the forward-paper gate with zero actual paper trades. Legacy
+        rows stay NULL ("unknown provenance") and get_forward_paper_stats()
+        excludes anything that isn't explicitly mode='paper'.
+        """
+        cursor = await self._db.execute("PRAGMA table_info(positions)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "mode" not in columns:
+            await self._db.execute("ALTER TABLE positions ADD COLUMN mode TEXT")
+            logger.info("Migrated positions table: added 'mode' column (NULL for pre-existing rows)")
 
     async def close(self) -> None:
         """Close the underlying SQLite connection if it is open."""
@@ -102,14 +122,14 @@ class PortfolioManager:
             raise RuntimeError("PortfolioManager is not initialized. Call `await portfolio.init()` before using it.")
         return self._db
 
-    async def open_position(self, pos: Position) -> None:
+    async def open_position(self, pos: Position, mode: str = "paper") -> None:
         """Insert a new open position row into the positions table and commit."""
         db = self._require_db()
         await db.execute(
             """INSERT INTO positions
                (position_id, market_id, token_id, trader_address, entry_price,
-                tp_price, sl_price, peak_price, size_shares, entry_time, resolve_time, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                tp_price, sl_price, peak_price, size_shares, entry_time, resolve_time, status, mode)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
             (
                 pos.position_id,
                 pos.market_id,
@@ -122,10 +142,11 @@ class PortfolioManager:
                 pos.size_shares,
                 pos.entry_time,
                 pos.resolve_time,
+                mode,
             ),
         )
         await db.commit()
-        logger.info("Position opened in DB: %s", pos.position_id)
+        logger.info("Position opened in DB: %s (mode=%s)", pos.position_id, mode)
 
     async def close_position(
         self,
@@ -344,6 +365,31 @@ class PortfolioManager:
         if total == 0:
             return 0.0, 0
         return wins / total, total
+
+    async def get_forward_paper_stats(self) -> dict:
+        """Closed-PAPER-trade evidence for the forward-paper gate.
+
+        Only positions explicitly tagged mode='paper' count — positions from a
+        database predating the mode column are NULL (unknown provenance, not
+        assumed paper) and positions opened under mode='live' are excluded, so
+        neither can silently satisfy "prove it in paper mode first".
+        """
+        db = self._require_db()
+        cursor = await db.execute(
+            """SELECT COUNT(*),
+                      COALESCE(SUM(realized_pnl), 0),
+                      SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END)
+               FROM positions WHERE status='closed' AND mode='paper'"""
+        )
+        row = await cursor.fetchone()
+        closed_trades = int(row[0]) if row and row[0] is not None else 0
+        net_pnl = float(row[1]) if row else 0.0
+        wins = int(row[2]) if row and row[2] is not None else 0
+        return {
+            "closed_trades": closed_trades,
+            "net_pnl": net_pnl,
+            "win_rate": (wins / closed_trades) if closed_trades else 0.0,
+        }
 
     async def summary(self) -> str:
         """Return a formatted text summary of open count, closed trades, win rate, and realized PnL."""

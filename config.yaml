@@ -33,7 +33,10 @@ copy_trading:
   max_trade_age_seconds: 12
   mirror_source_exits: true
   paper_fill_slippage_pct: 0.005
-  paper_taker_fee_rate: 0.02
+  # Fallback only (live CLOB/Gamma fee data wins when available). 0.08 gives
+  # a 2% peak fee at p=0.5 -- above every real category cap, so an unpriced
+  # market is never under-charged when live fee data is unavailable.
+  paper_taker_fee_rate: 0.08
   kelly_enabled: false
   kelly_fraction_multiplier: 0.25
   kelly_min_trades: 50            # M3: raised 20 -> 50 so early luck can't oversize
@@ -55,6 +58,12 @@ risk_management:
   cooldown_after_losses: 3
   cooldown_minutes: 60
   fail_closed_on_missing_data: true
+
+# Live-readiness gate: refuses to start live mode until enough paper
+# evidence exists. Never blocks paper mode.
+forward_paper_gate_enabled: true
+forward_paper_min_trades: 50
+forward_paper_min_net_pnl_usd: 0.0
 
 logging:
   level: INFO

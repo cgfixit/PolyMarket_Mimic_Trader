@@ -587,6 +587,11 @@ class CopyTrader:
             size_usdc=copy_size_usdc,
             # C2/M5: FOK ensures entries fill immediately in full or cancel.
             order_type=ct.entry_order_type,
+            # Carry the rate the edge gate above just approved this trade
+            # under, so the simulated paper fill charges the SAME number
+            # (see ClobClient.place_order) instead of silently reverting to
+            # the flat config default.
+            fee_rate=fee_rate,
         )
         try:
             # 10a. Place order.  M12: place_order_with_timeout handles GTC cancel+retry.
@@ -665,7 +670,7 @@ class CopyTrader:
                 decision_latency,
             )
 
-            await self.portfolio.open_position(pos)
+            await self.portfolio.open_position(pos, mode=self.config.mode)
             metrics.POSITIONS_OPENED.inc()
         finally:
             # H12: always decrement — whether the order succeeded, any early return
@@ -825,6 +830,17 @@ class CopyTrader:
             )
             pos.size_shares = db_pos.size_shares
         exit_shares = pos.size_shares
+        # Resolve fresh rather than caching the entry-time rate: a market's
+        # published fee can change between entry and exit, and a per-market
+        # cache keyed only by market_id would go stale the moment ANY other
+        # event for that market (even one that's later skipped) resolved a
+        # different rate. Skips the Gamma-market fallback tier (entry-only)
+        # to keep this off the latency-sensitive TP/SL exit path — CLOB
+        # market info direct to the conservative config default is enough.
+        exit_clob_fee_rate = await self.gamma.get_market_fee_rate(pos.market_id)
+        exit_fee_rate, _ = self._fee_rate_for_market(
+            None, exit_clob_fee_rate, self.config.copy_trading.taker_fee_rate()
+        )
         exit_order = Order(
             market_id=pos.market_id,
             token_id=pos.token_id,
@@ -836,6 +852,7 @@ class CopyTrader:
             # midpoint, which in a fast down-move trails the book and never
             # liquidates (unbounded loss).
             order_type=self.config.copy_trading.exit_order_type,
+            fee_rate=exit_fee_rate,
         )
 
         # Retry up to 3 times with exponential backoff. Only close the DB record

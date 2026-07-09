@@ -153,7 +153,7 @@ All trading parameters are in `config.yaml`. The defaults are conservative:
 | `fail_closed_on_missing_data` | true | Skip a copy when market metadata or price can't be verified |
 | `mirror_source_exits` | true | Exit when the tracked trader exits (SOURCE_EXIT) |
 | `paper_fill_slippage_pct` | 0.005 | Half-spread slippage in paper mode (~0.5%) |
-| `paper_taker_fee_rate` | 0.02 | Paper-mode taker fee rate; actual fee is price-shaped: `rate * price * (1 - price)` |
+| `paper_taker_fee_rate` | 0.08 | Fallback taker fee RATE (used only when live CLOB/Gamma fee data is unavailable); actual fee is price-shaped: `rate * price * (1 - price)`. 0.08 gives a 2% peak at p=0.5, above every real category cap |
 | `metrics_enabled` | false | Enable Prometheus metrics scrape endpoint |
 | `metrics_port` | 9090 | Port for Prometheus scrape endpoint |
 
@@ -170,6 +170,16 @@ python -m polymarket_copier.main --mode paper
 ```bash
 python -m polymarket_copier.main --mode live
 ```
+
+Live mode must additionally pass two fail-closed startup gates (`config.yaml`):
+
+1. **Geoblock preflight** — queries Polymarket's eligibility endpoint and refuses to
+   start if the jurisdiction is blocked *or eligibility can't be confirmed*.
+2. **Forward-paper gate** (`forward_paper_gate_enabled`, default on) — refuses to
+   start until the local database holds >= `forward_paper_min_trades` (default 50)
+   closed **paper** trades with positive net PnL. Only positions explicitly opened
+   under paper mode count; necessary, not sufficient — paper fills remain a
+   simulation, not proof of live edge.
 
 ## Risk Controls
 

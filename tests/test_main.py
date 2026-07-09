@@ -7,7 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from polymarket_copier.config import AppConfig, ConfigError
-from polymarket_copier.main import POLYMARKET_GEOBLOCK_URL, _enforce_live_geoblock_preflight, run_bot
+from polymarket_copier.core.portfolio import PortfolioManager
+from polymarket_copier.core.risk_manager import ExitReason, RiskConfig, RiskManager
+from polymarket_copier.main import (
+    POLYMARKET_GEOBLOCK_URL,
+    _enforce_live_geoblock_preflight,
+    enforce_forward_paper_gate,
+    run_bot,
+)
 
 
 class _FakeResp:
@@ -96,3 +103,55 @@ async def test_cli_live_override_revalidates_live_credentials(tmp_path, monkeypa
 
     with pytest.raises(ConfigError, match="POLY_PRIVATE_KEY required"):
         await run_bot(config_path=str(config_file), mode="live")
+
+
+class TestForwardPaperGate:
+    @pytest.fixture
+    async def portfolio(self, tmp_path):
+        pm = PortfolioManager(db_path=str(tmp_path / "gate_test.db"))
+        await pm.init()
+        yield pm
+        await pm.close()
+
+    async def _close_paper_trades(self, portfolio, n: int, exit_price: float):
+        rm = RiskManager(config=RiskConfig(max_trader_allocation=1.0), bankroll=10_000.0)
+        for i in range(n):
+            pos = await rm.build_position(
+                position_id=f"p{i}",
+                market_id=f"m{i}",
+                token_id=f"t{i}",
+                trader_address="0xw",
+                entry_price=0.50,
+                size_shares=100.0,
+            )
+            await portfolio.open_position(pos, mode="paper")
+            await portfolio.close_position(pos.position_id, exit_price, ExitReason.TAKE_PROFIT)
+
+    @pytest.mark.asyncio
+    async def test_paper_mode_never_gated(self, portfolio, logger):
+        config = AppConfig(mode="paper")
+        await enforce_forward_paper_gate(config, portfolio, logger)  # no raise
+
+    @pytest.mark.asyncio
+    async def test_live_with_no_evidence_refused(self, portfolio, logger):
+        config = AppConfig(mode="live")
+        with pytest.raises(ConfigError, match="Forward-paper gate"):
+            await enforce_forward_paper_gate(config, portfolio, logger)
+
+    @pytest.mark.asyncio
+    async def test_live_with_enough_profitable_paper_trades_passes(self, portfolio, logger):
+        config = AppConfig(mode="live", forward_paper_min_trades=3)
+        await self._close_paper_trades(portfolio, 3, exit_price=0.60)  # +$10 each
+        await enforce_forward_paper_gate(config, portfolio, logger)  # no raise
+
+    @pytest.mark.asyncio
+    async def test_live_with_losing_paper_record_refused(self, portfolio, logger):
+        config = AppConfig(mode="live", forward_paper_min_trades=3)
+        await self._close_paper_trades(portfolio, 3, exit_price=0.40)  # -$10 each
+        with pytest.raises(ConfigError, match="Forward-paper gate"):
+            await enforce_forward_paper_gate(config, portfolio, logger)
+
+    @pytest.mark.asyncio
+    async def test_disabled_gate_passes_with_no_evidence(self, portfolio, logger):
+        config = AppConfig(mode="live", forward_paper_gate_enabled=False)
+        await enforce_forward_paper_gate(config, portfolio, logger)  # no raise

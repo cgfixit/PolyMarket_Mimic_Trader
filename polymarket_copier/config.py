@@ -8,7 +8,7 @@ from typing import Literal, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 class ConfigError(ValueError):
@@ -101,7 +101,15 @@ class CopyTradingConfig(BaseModel):
     # Canonical key: taker fee is a RATE, while actual paid fee is price-shaped:
     # fee_per_share = fee_rate * price * (1 - price). The legacy `_pct` alias is
     # still accepted so existing configs and tests keep working.
-    paper_taker_fee_rate: float = 0.02
+    # This is the FALLBACK used only when neither the CLOB market-info fee nor
+    # a Gamma-reported fee is available (see copier._fee_rate_for_market).
+    # UNIT NOTE: 0.02 gives a 0.5% peak fee at p=0.5 (rate * 0.25) — BELOW every
+    # real Polymarket category cap (sports, the cheapest, peaks at 0.75% i.e.
+    # rate ~0.03; crypto peaks ~1.8% i.e. rate ~0.072). A fallback below every
+    # real cap under-charges paper fills whenever live fee data is unavailable,
+    # inflating paper PnL right when the bot most needs the conservative number.
+    # 0.08 (2% peak) sits above every published category cap.
+    paper_taker_fee_rate: float = 0.08
     paper_taker_fee_pct: Optional[float] = None
     # Live-mode slippage cap: reject a BUY if no ask depth exists within this
     # fraction of the requested price. Prevents inadvertently paying far above
@@ -220,7 +228,14 @@ class LoggingConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    mode: str = "paper"
+    # Literal, not str: ClobClient decides real-vs-simulated orders with
+    # `mode == "paper"`, while every safety gate (geoblock preflight,
+    # validate_live_config, the forward-paper gate) checks `mode == "live"`.
+    # A free-text field let an unrecognized value (a config.yaml typo like
+    # "LIVE" or "prod") take the real-order path while every gate silently
+    # no-op'd on the same value, since neither comparison matched it. See
+    # load_config(), which case-normalizes before this Literal validates.
+    mode: Literal["paper", "live"] = "paper"
     polling_interval_seconds: int = 8
     # H17: bound (seconds) on poll-interval jitter and per-wallet phase offset.
     # Randomizes the poll cadence so an observer can't predict when we detect a
@@ -256,6 +271,15 @@ class AppConfig(BaseModel):
     bankroll: float = 500
     # H9: seconds before the watchdog fires a stall alert; 0 = auto (3× poll_interval)
     detection_stall_alert_seconds: float = 0.0
+    # Forward-paper gate (readiness plan "PR 4" skeleton): live mode refuses to
+    # start until the local database holds at least forward_paper_min_trades
+    # closed PAPER trades with net realized PnL strictly greater than
+    # forward_paper_min_net_pnl_usd. Necessary, not sufficient — paper fills
+    # remain a simulation (see paper_taker_fee_rate), not proof of live edge.
+    # Never blocks paper mode. See PortfolioManager.get_forward_paper_stats().
+    forward_paper_gate_enabled: bool = True
+    forward_paper_min_trades: int = 50
+    forward_paper_min_net_pnl_usd: float = 0.0
 
 
 def validate_live_config(config: AppConfig) -> None:
@@ -284,7 +308,17 @@ def load_config(
         with open(config_file) as f:
             yaml_data = yaml.safe_load(f) or {}
 
-    config = AppConfig(**yaml_data)
+    # Case-normalize mode so "LIVE"/"Paper" load as intended; a value that is
+    # still not "paper"/"live" after normalizing (typo, unrelated string) then
+    # fails loudly via the Literal type below rather than silently taking the
+    # real-order path with every safety gate no-op'd (see AppConfig.mode).
+    if isinstance(yaml_data.get("mode"), str):
+        yaml_data["mode"] = yaml_data["mode"].strip().lower()
+
+    try:
+        config = AppConfig(**yaml_data)
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid configuration in {config_path}: {exc}") from exc
 
     config.private_key = os.getenv("POLY_PRIVATE_KEY", "")
     config.api_key = os.getenv("POLY_API_KEY", "")
