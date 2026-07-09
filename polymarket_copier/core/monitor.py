@@ -223,6 +223,10 @@ class TradeMonitor:
         # Snapshot of what was last sent in a subscription message.
         # _maybe_update_subscription diffs against this to avoid redundant sends.
         self._last_subscribed: Set[str] = set()
+        # Raised whenever subscribe_token/unsubscribe_token changes the desired set.
+        # _ws_heartbeat waits on this and pushes an immediate update instead of
+        # waiting for incoming WS traffic.
+        self._subscription_update_requested = asyncio.Event()
 
         # Whether the WS is currently connected and healthy
         self._ws_healthy: bool = False
@@ -259,7 +263,7 @@ class TradeMonitor:
         self._poll_task = tasks[0]
         self._ws_task = tasks[1] if len(tasks) > 1 else None
 
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks)
 
     async def stop(self) -> None:
         """Signal both loops to exit cleanly."""
@@ -276,11 +280,13 @@ class TradeMonitor:
     def subscribe_token(self, token_id: str) -> None:
         """Register a token ID for real-time price feed via WebSocket."""
         self._subscribed_tokens.add(token_id)
+        self._subscription_update_requested.set()
         logger.debug("Queued WS subscription for token %s", token_id)
 
     def unsubscribe_token(self, token_id: str) -> None:
         """Remove a token from the real-time price feed (after position closed)."""
         self._subscribed_tokens.discard(token_id)
+        self._subscription_update_requested.set()
 
     async def set_wallets(self, wallets: list[str]) -> None:
         """Replace the tracked-wallet list without losing seen-id state for retained wallets."""
@@ -377,6 +383,17 @@ class TradeMonitor:
     async def _ws_heartbeat(self, ws) -> None:
         """Send Polymarket's application-level WS ping payload."""
         while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._subscription_update_requested.wait(),
+                    timeout=_WS_PING_INTERVAL,
+                )
+            except asyncio.TimeoutError:
+                pass
+            self._subscription_update_requested.clear()
+            await self._maybe_update_subscription(ws)
+            if self._stop_event.is_set():
+                return
             await asyncio.sleep(_WS_PING_INTERVAL)
             await ws.send("PING")
 
