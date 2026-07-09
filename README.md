@@ -1,4 +1,4 @@
-# PolyMarket_Mimic_Trader
+# PolyMarket Mimic Trader Python Bot
 [![CodeQL – PolyMarket Mimic Trader](https://github.com/CGFixIT/PolyMarket_Mimic_Trader/actions/workflows/codeql.yml/badge.svg)](https://github.com/CGFixIT/PolyMarket_Mimic_Trader/actions/workflows/codeql.yml)
 [![CI](https://github.com/CGFixIT/PolyMarket_Mimic_Trader/actions/workflows/ci.yml/badge.svg)](https://github.com/CGFixIT/PolyMarket_Mimic_Trader/actions/workflows/ci.yml)
 
