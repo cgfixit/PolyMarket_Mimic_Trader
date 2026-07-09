@@ -333,12 +333,14 @@ class CopyTrader:
                 return
 
         # 4. Price deviation check. Fail CLOSED if the current price is unknown.
+        price_fell_back_to_event = False
         if current_price is None:
             if self.config.risk_management.fail_closed_on_missing_data:
                 logger.info("Skip: current price unavailable for token %s (fail-closed)", event.token_id[:10])
                 self._record_skip("missing_price", event)
                 return
             current_price = event.price
+            price_fell_back_to_event = True
 
         ct = self.config.copy_trading
 
@@ -493,35 +495,36 @@ class CopyTrader:
         if market and market.resolve_time:
             resolve_ts = market.resolve_time.timestamp()
 
-        # 6b. M1: edge revalidation — moved BEFORE the lock (H12).  This is a network
-        #     call; holding the entry lock over I/O would head-of-line block every
-        #     other candidate copy while we wait on Gamma/CLOB. `_pending_entries`
-        #     keeps the cap checks below sound once the lock is released.
-        current_price2 = await self.gamma.get_market_price(event.token_id)
-        if current_price2 is None:
-            logger.info("Skip: price unavailable during edge revalidation")
-            self._record_skip("missing_price", event)
-            return
-        if current_price > 0:
-            adverse_move = (current_price2 - current_price) / current_price
-            if adverse_move > ct.max_revalidation_slippage_pct:
-                logger.info(
-                    "Skip: price moved +%.2f%% during revalidation (> %.2f%%)",
-                    adverse_move * 100,
-                    ct.max_revalidation_slippage_pct * 100,
-                )
-                self._record_skip(
-                    "edge_revalidation",
-                    event,
-                    revalidation_move_pct=round(adverse_move * 100, 2),
-                    old_price=current_price,
-                    new_price=current_price2,
-                )
+        if ct.revalidate_edge_before_order and not price_fell_back_to_event:
+            # 6b. M1: edge revalidation — moved BEFORE the lock (H12).  This is a network
+            #     call; holding the entry lock over I/O would head-of-line block every
+            #     other candidate copy while we wait on Gamma/CLOB. `_pending_entries`
+            #     keeps the cap checks below sound once the lock is released.
+            current_price2 = await self.gamma.get_market_price(event.token_id)
+            if current_price2 is None:
+                logger.info("Skip: price unavailable during edge revalidation")
+                self._record_skip("missing_price", event)
                 return
-            # Favorable move? Recompute against the IMPROVED price so we don't buy
-            # less edge than the current book actually offers.
-            current_price = current_price2
-            size_shares = copy_size_usdc / max(current_price, 1e-6)
+            if current_price > 0:
+                adverse_move = (current_price2 - current_price) / current_price
+                if adverse_move > ct.max_price_deviation:
+                    logger.info(
+                        "Skip: price moved +%.2f%% during revalidation (> %.2f%%)",
+                        adverse_move * 100,
+                        ct.max_price_deviation * 100,
+                    )
+                    self._record_skip(
+                        "edge_revalidation",
+                        event,
+                        revalidation_move_pct=round(adverse_move * 100, 2),
+                        old_price=current_price,
+                        new_price=current_price2,
+                    )
+                    return
+                # Favorable move? Recompute against the IMPROVED price so we don't buy
+                # less edge than the current book actually offers.
+                current_price = current_price2
+                size_shares = copy_size_usdc / max(current_price, 1e-6)
 
         pos = None
         # 7. Position caps + exposure reservation (critical section).
@@ -534,22 +537,21 @@ class CopyTrader:
                 return
 
             # 7b. Per-token cap using the in-memory cache + pending entry already in cache.
-            same_token = sum(1 for p in self._pos_cache.get(event.token_id, []) if p.trader_address == event.wallet_address)
-            if same_token >= ct.max_positions_per_market:
+            same_token = len(self._pos_cache.get(event.token_id, []))
+            if ct.max_positions_per_token > 0 and same_token >= ct.max_positions_per_token:
                 logger.info("Skip: already holding %d positions on token %s", same_token, event.token_id[:10])
                 self._record_skip("duplicate_market", event)
                 return
 
             try:
                 pos = await self.risk.build_position(
+                    position_id=uuid.uuid4().hex,
                     market_id=event.market_id,
                     token_id=event.token_id,
-                    outcome_label=event.outcome_label,
-                    side="BUY",
                     entry_price=current_price,
                     size_shares=size_shares,
                     trader_address=event.wallet_address,
-                    resolve_ts=resolve_ts,
+                    resolve_time=resolve_ts,
                 )
             except ExposureCapError as e:
                 logger.info("Skip: exposure cap — %s", e)
