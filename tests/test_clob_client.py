@@ -210,6 +210,42 @@ class TestLiveModeGuards:
         assert calls["derive_calls"] == 1
         assert calls["creds"] is derived
 
+    def test_init_live_client_derives_api_creds_when_passphrase_missing(self, monkeypatch):
+        """Partial L2 creds must not bypass derivation: current docs require all three values."""
+
+        derived = object()
+        calls: dict[str, object] = {"derive_calls": 0, "set_calls": 0}
+
+        class FakeVenueClient:
+            def __init__(self, *_args, **_kwargs):
+                return None
+
+            def set_api_creds(self, creds):
+                calls["set_calls"] += 1
+                calls["creds"] = creds
+
+            def create_or_derive_api_creds(self):
+                calls["derive_calls"] += 1
+                return derived
+
+        _install_fake_py_clob_client(monkeypatch, FakeVenueClient)
+        client = ClobClient(
+            AppConfig(
+                mode="live",
+                bankroll=10_000,
+                private_key="0x" + "3" * 64,
+                api_key="api-key",
+                api_secret="api-secret",
+                api_passphrase="",
+            )
+        )
+
+        client._init_live_client()
+
+        assert calls["derive_calls"] == 1
+        assert calls["set_calls"] == 1
+        assert calls["creds"] is derived
+
     @pytest.mark.asyncio
     async def test_live_buy_thin_book_raises_before_auth(self, live_client):
         # In live mode a BUY triggers the depth check first. With a thin book the
