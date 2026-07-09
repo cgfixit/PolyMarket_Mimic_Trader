@@ -14,6 +14,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default for the GITHUB_TOKEN. Jobs only need to checkout and
+# run tests/lint/mypy/audit; they do not write contents or packages.
+permissions:
+  contents: read
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Jobs
 # ──────────────────────────────────────────────────────────────────────────────
