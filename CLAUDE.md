@@ -88,9 +88,10 @@ Facts that contradict naive assumptions:
   their own rate limiters and sessions.
 - Polling has deliberate jitter and per-wallet phase offsets (front-run resistance, tag H17).
   Don't "simplify" the interval math.
-- Two logger names coexist: `"polymarket_copier"` (configured by `setup_logger`) and
-  `__name__`-based loggers in monitor/risk_manager/tracker. Logs from the latter do not route
-  through the JSON file handler unless root is configured.
+- Two logger naming styles coexist: `"polymarket_copier"` (configured by `setup_logger`) and
+  `__name__`-based loggers in monitor/risk_manager/tracker. The latter are *children* of the
+  former (`polymarket_copier.core.…`), so their records propagate to the configured JSON
+  handlers — both styles land in the same log output (verified empirically 2026-07-08).
 - `main.py` is essentially untested (only the geoblock preflight has tests). Treat any change
   to its wiring as high-risk and add at least a smoke test.
 
@@ -302,6 +303,10 @@ trust the code, fix the doc in your PR. A test fails on `main` before your chang
 
 ## References
 
+- `INVARIANTS.md` — **read before touching any code file**: the pinned behavioral
+  invariants, the test proving each one, and the known divergences you must not fix
+  unprompted (backed by `tests/test_invariants.py` and
+  `docs/DUE_DILIGENCE_AUDIT_2026-07-08.md`)
 - `AGENTS.md` — tool-agnostic entrypoint + claim discipline
 - `next_steps.md` — current backlog (R1–R6 real-money gates, L1–L4 low-level)
 - `docs/PR_75_76_77_CLAIMS_NOTEPAD.md` — claims-ledger exemplar (the fact-check output shape)
