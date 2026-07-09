@@ -31,11 +31,25 @@ def test_activity_helpers_normalize_current_activity_shape():
 
 
 def test_activity_helpers_keep_legacy_shape():
-    raw = {"id": "t1", "market": "m", "asset": "a", "type": "trade", "side": "SELL", "size": "10"}
+    raw = {
+        "id": "t1",
+        "market": "m",
+        "asset": "a",
+        "type": "trade",
+        "side": "SELL",
+        "size": "10",
+        "price": "0.50",
+    }
 
     assert activity_id(raw) == "t1"
     assert activity_market_id(raw) == "m"
     assert activity_token_id(raw) == "a"
     assert activity_side(raw) == "SELL"
-    assert activity_notional_usdc(raw) == pytest.approx(10.0)
+    assert activity_notional_usdc(raw) == pytest.approx(5.0)
     assert is_trade_activity(raw)
+
+
+def test_activity_helpers_fail_closed_when_notional_cannot_be_derived():
+    raw = {"id": "t2", "market": "m", "asset": "a", "type": "trade", "side": "BUY", "size": "10"}
+
+    assert activity_notional_usdc(raw) == pytest.approx(0.0)
