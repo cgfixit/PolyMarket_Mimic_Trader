@@ -41,6 +41,7 @@ from polymarket_copier.core.risk_manager import (
     RiskConfig,
     RiskManager,
     Side,
+    _midnight_utc,
 )
 from polymarket_copier.core.sizing import kelly_fraction, kelly_size_from_edge, kelly_size_usdc
 from polymarket_copier.core.tracker import TraderScorer, TraderStats, TrackerConfig
@@ -225,8 +226,14 @@ class TestExposureAccounting:
         )
         for i in range(10):
             await rm.build_position(f"p{i}", "mkt", "tok", "0xw", entry_price=0.1, size_shares=1.0)
-        # float would give 0.9999999999999999; Decimal-by-str gives exactly 1.0
-        assert sum([0.1] * 10) != 1.0
+        # Control: sequential float accumulation (how exposure would build if
+        # regressed to float) drifts to 0.9999999999999999 on every CPython.
+        # NB: don't use sum() here — 3.12+ gives it compensated summation.
+        naive_float_total = 0.0
+        for _ in range(10):
+            naive_float_total += 0.1
+        assert naive_float_total != 1.0
+        # The Decimal-by-str path must be exact.
         assert rm.market_exposure("mkt") == 1.0
         for _ in range(10):
             await rm.release_exposure("mkt", 0.1, trader_address="0xw")
@@ -355,31 +362,31 @@ class TestDailyWindowUTC:
     (CLAUDE.md persistence rule; risk_manager.py::_midnight_utc)."""
 
     def test_daily_window_resets_at_utc_midnight_not_local_midnight(self, monkeypatch):
-        import polymarket_copier.core.risk_manager as rm_mod
-
         # Force a non-UTC host timezone so local-time date math would misfire.
         if hasattr(time, "tzset"):
             monkeypatch.setenv("TZ", "America/New_York")
             time.tzset()
         try:
             rm = _rm()
-            day_start = rm_mod._midnight_utc()
+            day_start = _midnight_utc()
             rm._day_start_ts = day_start
             rm._daily_pnl = Decimal("-50")
 
             # 1 second BEFORE the next UTC midnight: window must NOT reset
             # (local-date math would already have rolled over in New York).
-            monkeypatch.setattr(rm_mod.time, "time", lambda: day_start + 86_399.0)
+            # risk_manager reads the shared `time` module, so patching it here
+            # patches the module under test too.
+            monkeypatch.setattr(time, "time", lambda: day_start + 86_399.0)
             rm.is_trading_halted()
             assert rm.daily_pnl() == -50.0
 
             # 1 second AFTER UTC midnight: window must reset.
-            monkeypatch.setattr(rm_mod.time, "time", lambda: day_start + 86_401.0)
+            monkeypatch.setattr(time, "time", lambda: day_start + 86_401.0)
             rm.is_trading_halted()
             assert rm.daily_pnl() == 0.0
         finally:
+            monkeypatch.undo()
             if hasattr(time, "tzset"):
-                monkeypatch.delenv("TZ", raising=False)
                 time.tzset()
 
 
