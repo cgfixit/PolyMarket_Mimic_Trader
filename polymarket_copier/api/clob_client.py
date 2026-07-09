@@ -135,7 +135,7 @@ class ClobClient:
                     signature_type=self.config.signature_type,
                     funder=self.config.funder or None,
                 )
-                if self.config.api_key and self.config.api_secret:
+                if self.config.api_key and self.config.api_secret and self.config.api_passphrase:
                     self._client.set_api_creds(
                         type(
                             "Creds",
@@ -148,6 +148,10 @@ class ClobClient:
                         )()
                     )
                 else:
+                    if self.config.api_key or self.config.api_secret or self.config.api_passphrase:
+                        logger.warning(
+                            "Incomplete POLY_API_* credentials provided; deriving live CLOB API creds instead"
+                        )
                     creds = self._client.create_or_derive_api_creds()
                     self._client.set_api_creds(creds)
                 logger.info("Live CLOB client initialized")
