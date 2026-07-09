@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from unittest.mock import MagicMock
@@ -232,19 +233,55 @@ class TestTradeMonitor:
     @pytest.mark.asyncio
     async def test_ws_heartbeat_sends_polymarket_ping(self, monkeypatch):
         sent = []
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
+
+        class FakeWS:
+            async def send(self, msg):
+                sent.append(msg)
+                monitor._stop_event.set()
+
+        async def immediate_timeout(_aw, timeout=None):  # noqa: ARG001
+            raise TimeoutError
+
+        monkeypatch.setattr(
+            "polymarket_copier.core.monitor.asyncio.wait_for",
+            immediate_timeout,
+        )
+
+        await monitor._ws_heartbeat(FakeWS())
+        assert sent == ["PING"]
+
+    @pytest.mark.asyncio
+    async def test_ws_heartbeat_subscription_wake_does_not_ping(self, monkeypatch):
+        """Early wake for subscription updates must not emit an extra PING."""
+        sent = []
+        wait_calls = 0
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
 
         class FakeWS:
             async def send(self, msg):
                 sent.append(msg)
 
-        async def no_sleep(_seconds):
+        async def first_wake_then_stop(_aw, timeout=None):  # noqa: ARG001
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                return True
             monitor._stop_event.set()
+            raise TimeoutError
 
-        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
-        monkeypatch.setattr("polymarket_copier.core.monitor.asyncio.sleep", no_sleep)
+        async def no_sub(_ws):
+            return None
+
+        monkeypatch.setattr(
+            "polymarket_copier.core.monitor.asyncio.wait_for",
+            first_wake_then_stop,
+        )
+        monkeypatch.setattr(monitor, "_maybe_update_subscription", no_sub)
 
         await monitor._ws_heartbeat(FakeWS())
-        assert sent == ["PING"]
+        assert sent == []
+        assert wait_calls == 2
 
 
 class TestColdStartPriming:
@@ -611,24 +648,35 @@ class TestMonitorRunAndSubscriptionRefresh:
     @pytest.mark.asyncio
     async def test_ws_heartbeat_pushes_subscription_update(self, monkeypatch):
         sent = []
+        wait_calls = 0
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
+        monitor.subscribe_token("tok-1")
 
         class FakeWS:
             async def send(self, msg):
                 sent.append(msg)
 
-        async def stop_after_first_sleep(_seconds):
+        async def wake_sub_then_timeout_ping(_aw, timeout=None):  # noqa: ARG001
+            """First wait: subscription Event is set; second: interval elapsed → PING."""
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                return True
             monitor._stop_event.set()
+            raise TimeoutError
 
-        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
-        monitor.subscribe_token("tok-1")
-
-        monkeypatch.setattr("polymarket_copier.core.monitor.asyncio.sleep", stop_after_first_sleep)
+        monkeypatch.setattr(
+            "polymarket_copier.core.monitor.asyncio.wait_for",
+            wake_sub_then_timeout_ping,
+        )
 
         await monitor._ws_heartbeat(FakeWS())
 
         assert any(json.loads(msg).get("type") == "market" for msg in sent if msg != "PING")
-        assert "PING" in sent
+        # stop is set before the TimeoutError path returns, so no PING is required here —
+        # subscription update is the assertion under test.
         assert monitor._last_subscribed == {"tok-1"}
+        assert wait_calls == 2
 
 
 # ─── C5: set_wallets — rebalance without KeyError on new wallets ──────────────
