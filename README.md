@@ -19,7 +19,8 @@ Do not fund live mode until you have a venue-specific legal review, a held-out b
 
 ```
 1. DISCOVER   Fetch the Polymarket leaderboard, score traders by
-              Sharpe ratio × Consistency × Recency (not raw PnL)
+              a weighted sum of capped Sharpe, consistency, and recency
+              (not raw PnL)
               Dual-window filter: traders must rank in both all-time
               and recent 30-day windows to qualify
 
@@ -30,7 +31,7 @@ Do not fund live mode until you have a venue-specific legal review, a held-out b
 3. COPY       Mirror entries at a flat 50% of source size, capped at 2%
               of bankroll (Kelly-capable, but disabled by default — see below)
               Skip if price moved >2%, volume <$5K, or market resolves <24h
-              Fee + spread deducted from edge before sizing
+              Fee + spread checked before copying
 
 4. MANAGE     Range-relative TP/SL (not flat %), trailing stop,
               per-market 8% exposure cap, daily loss circuit breaker
@@ -51,19 +52,19 @@ Polymarket tokens are bounded in [0, 1]. Flat-percentage TP/SL breaks at extreme
 |-------|-------------|-------------------|-------------------|
 | $0.20 | $0.23 | **$0.52** (40% of $0.80 upside) | $0.15 |
 | $0.50 | $0.575 | **$0.70** (40% of $0.50 upside) | $0.375 |
-| $0.82 | $0.943 | **$0.892** (40% of $0.18 upside) | $0.615 |
-| $0.97 | $1.12 (impossible) | **$1.00** (clamped) | $0.727 |
+| $0.82 | $0.943 | **$0.892** (40% of $0.18 upside) | $0.748 |
+| $0.97 | $1.12 (impossible) | **$1.00** (clamped) | $0.94 |
 
 ### Risk-Adjusted Trader Scoring
 
-Traders are ranked by `Sharpe_proxy × Consistency × Recency_weight`, not raw PnL. This filters out lucky concentrated bettors in favor of consistently profitable traders across many markets. Additional guards:
+Traders are ranked by the weighted sum `(4.0 * Sharpe_proxy + 3.5 * Consistency + 2.5 * Recency_weight) / 10`, not a product and not raw PnL. This filters out lucky concentrated bettors in favor of consistently profitable traders across many markets. Additional guards:
 - Sharpe proxy capped at 3.0 and shrunk for small samples to prevent outlier amplification
 - Traders must rank in both the all-time and trailing 30-day leaderboard windows
 - Expectancy / profit-factor weighted instead of raw win rate to avoid favorite-buyer bias
 
 ### Fractional Kelly Sizing (opt-in, off by default)
 
-Position sizes default to a flat 50% of source size (`size_multiplier`), capped at 2% of bankroll per trade. Setting `kelly_enabled: true` in `config.yaml` switches sizing to a fractional Kelly criterion instead of the flat multiplier. The Kelly probability input is derived from the trader's demonstrated mean ROI (not raw win rate), and activates only once the trader has ≥50 closed trades — until then it falls back to the flat multiplier. A tracker-derived prior is used during warm-up with time-decay weighting so stale leaderboard data contributes less. Kelly is off by default because its edge estimate inherits the same win-rate/ROI biases the tracker's stats have not yet been de-biased for (see `PROFITABILITY_ANALYSIS_JUNE_2026.md` §4.2–4.3); the 2% hard cap bounds the damage either way.
+Position sizes default to a flat 50% of source size (`size_multiplier`), capped at 2% of bankroll per trade. Setting `kelly_enabled: true` in `config.yaml` switches sizing to fractional Kelly. Once a trader has at least `kelly_min_trades` bot-closed trades, sizing uses that trader's observed portfolio win rate. Before that sample exists, `kelly_seed_from_tracker: true` can seed from tracker mean ROI with time decay. Kelly is off by default because both paths inherit measurement bias (see `PROFITABILITY_ANALYSIS_JUNE_2026.md` §4.2–4.3); the 2% hard cap bounds the damage either way.
 
 ### WebSocket + REST Hybrid Monitor
 
@@ -137,7 +138,7 @@ All trading parameters are in `config.yaml`. The defaults are conservative:
 | `max_trade_pct` | 0.02 | Max 2% of bankroll per trade |
 | `tp_range_fraction` | 0.40 | Take profit at 40% of remaining upside |
 | `sl_range_fraction` | 0.25 | Stop loss at 25% of remaining downside |
-| `trailing_stop_fraction` | 0.40 | Trail 40% below peak-to-SL gap |
+| `trailing_stop_fraction` | 0.40 | Give back 40% of the run-up from entry, floored at hard SL |
 | `max_market_exposure_pct` | 0.08 | Max 8% of bankroll in any single market |
 | `max_trader_allocation` | 0.05 | Max 5% of bankroll copied from any single trader |
 | `daily_loss_limit_pct` | 0.03 | Halt all trading after 3% daily loss (resets at UTC midnight) |
@@ -148,7 +149,7 @@ All trading parameters are in `config.yaml`. The defaults are conservative:
 | `cooldown_minutes` | 60 | Length of the post-loss cooldown |
 | `kelly_enabled` | false | Enable fractional Kelly sizing (requires ≥50 closed trades to activate) |
 | `kelly_min_trades` | 50 | Minimum closed trades before Kelly activates |
-| `kelly_fraction` | 0.25 | Fraction of full Kelly to use (0.25 = quarter-Kelly) |
+| `kelly_fraction_multiplier` | 0.25 | Fraction of full Kelly to use (0.25 = quarter-Kelly) |
 | `fail_closed_on_missing_data` | true | Skip a copy when market metadata or price can't be verified |
 | `mirror_source_exits` | true | Exit when the tracked trader exits (SOURCE_EXIT) |
 | `paper_fill_slippage_pct` | 0.005 | Half-spread slippage in paper mode (~0.5%) |
@@ -198,8 +199,8 @@ The bot enforces multiple layers of protection:
 ## Testing
 
 ```bash
-# Run all tests (453 tests)
-pytest -v
+# Run the CI test suite
+pytest -v -m "not integration"
 
 # Run only the integration tests
 pytest tests/test_integration.py -v
@@ -255,7 +256,7 @@ Polymarket Data API                    Polymarket CLOB WebSocket
 1. Load config + logger → init `RiskManager`, `PortfolioManager`, shared `aiohttp.ClientSession`
 2. Rehydrate market/trader exposure from DB open positions (single DB fetch, passed to both rehydration steps)
 3. Fetch top traders via `TrackerClient.refresh()` (dual-window leaderboard, activity cache)
-4. Launch concurrent tasks: `monitor.run()`, `rebalance_loop()`, `exit_check_loop()`, `shutdown_watcher()`
+4. Launch concurrent tasks: `monitor.run()`, `rebalance_loop()`, `exit_check_loop()`, `metrics_loop()`, `heartbeat_watchdog()`, `shutdown_watcher()`
 5. SIGINT/SIGTERM → set `shutdown_event` → cancel tasks → print portfolio summary → exit
 
 ### Key APIs Used
@@ -271,11 +272,13 @@ Polymarket Data API                    Polymarket CLOB WebSocket
 
 When `metrics_enabled: true` in `config.yaml`, a Prometheus scrape endpoint is exposed on `metrics_port` (default 9090). Available metrics:
 
-- `polymarket_bankroll_usdc` — current bankroll
-- `polymarket_daily_pnl_usdc` — today's realized PnL
-- `polymarket_open_positions` — count of open positions
-- `polymarket_copies_skipped_total` — copies skipped by reason label
-- `polymarket_orders_placed_total` — orders placed by side (BUY/SELL)
+- `copybot_bankroll_usd` — current bankroll
+- `copybot_daily_pnl_usd` — today's realized PnL
+- `copybot_open_positions` — count of open positions
+- `copybot_open_unrealized_pnl_usd` — conservative unrealized PnL
+- `copybot_total_exposure_usd` — deployed USDC across open markets
+- `copybot_copies_skipped_total` — copies skipped by reason label
+- `copybot_exits_total` — exits by reason label
 
 Structured JSON log events are emitted on the `data` logger channel for downstream analysis:
 - `position_opened`, `position_closed` — entry/exit with price, size, PnL
