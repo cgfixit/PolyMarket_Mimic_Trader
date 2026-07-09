@@ -588,6 +588,49 @@ class TestWsReconnectFallback:
         assert all(d <= cap + 1e-6 for d in sleep_calls), sleep_calls
 
 
+class TestMonitorRunAndSubscriptionRefresh:
+    """Monitor orchestration and WS subscription refresh reliability."""
+
+    @pytest.mark.asyncio
+    async def test_run_propagates_poll_loop_exception(self, monkeypatch):
+        async def fail():
+            raise RuntimeError("simulated crash")
+
+        # Force a deterministic single-task setup so the exception path is testable.
+        monkeypatch.setattr("polymarket_copier.core.monitor._WS_AVAILABLE", False)
+
+        monitor = TradeMonitor(
+            tracked_wallets=["0xabc"],
+            on_trade=_noop_trade,
+        )
+        monitor._poll_loop = fail
+
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            await monitor.run()
+
+    @pytest.mark.asyncio
+    async def test_ws_heartbeat_pushes_subscription_update(self, monkeypatch):
+        sent = []
+
+        class FakeWS:
+            async def send(self, msg):
+                sent.append(msg)
+
+        async def stop_after_first_sleep(_seconds):
+            monitor._stop_event.set()
+
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
+        monitor.subscribe_token("tok-1")
+
+        monkeypatch.setattr("polymarket_copier.core.monitor.asyncio.sleep", stop_after_first_sleep)
+
+        await monitor._ws_heartbeat(FakeWS())
+
+        assert any(json.loads(msg).get("type") == "market" for msg in sent if msg != "PING")
+        assert "PING" in sent
+        assert monitor._last_subscribed == {"tok-1"}
+
+
 # ─── C5: set_wallets — rebalance without KeyError on new wallets ──────────────
 
 
