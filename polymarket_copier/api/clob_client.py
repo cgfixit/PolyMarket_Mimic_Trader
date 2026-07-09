@@ -373,6 +373,14 @@ class ClobClient:
         status = raw.get("status") if isinstance(raw, dict) else None
         return {"status": status, "filled_size": filled, "avg_price": avg}
 
+    async def _get_order_with_timeout(self, order_id: Optional[str], timeout: float) -> Optional[dict[str, Any]]:
+        """Bound retry-confirm reads so a stuck status call cannot stall live order handling."""
+        try:
+            return await asyncio.wait_for(self.get_order(order_id), timeout=max(timeout, 0.1))
+        except asyncio.TimeoutError:
+            logger.warning("get_order(%s) timed out after %.1fs", order_id, timeout)
+            return None
+
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an order by id, returning True on success (always True in paper mode)."""
         if self.paper_mode:
@@ -423,7 +431,7 @@ class ClobClient:
         poll = max(0.5, min(ct.live_order_timeout_seconds / 4.0, 2.0))
         while filled < intended_shares and order_id and time.monotonic() < deadline:
             await asyncio.sleep(poll)
-            confirm = await self.get_order(order_id)
+            confirm = await self._get_order_with_timeout(order_id, timeout=poll)
             if confirm is None:
                 break  # ambiguous → stop polling, fall through to no-retry
             cf = confirm.get("filled_size")
@@ -440,7 +448,7 @@ class ClobClient:
         if not await self.cancel_order(order_id):
             logger.warning("M12: cancel failed for %s — NOT retrying (ambiguous)", order_id)
             return result
-        confirm = await self.get_order(order_id)
+        confirm = await self._get_order_with_timeout(order_id, timeout=poll)
         if confirm is None or confirm.get("filled_size") is None:
             logger.warning("M12: post-cancel confirm unavailable for %s — NOT retrying", order_id)
             return result

@@ -395,6 +395,19 @@ class TestPlaceOrderWithTimeout:
         c.cancel_order.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_status_confirm_has_outer_timeout(self):
+        c = _orchestrator_client()
+
+        async def stuck_get_order(_order_id):
+            await asyncio.sleep(1.0)
+
+        c.get_order = AsyncMock(side_effect=stuck_get_order)
+        start = time.monotonic()
+
+        assert await c._get_order_with_timeout("o1", timeout=0.01) is None
+        assert time.monotonic() - start < 0.5
+
+    @pytest.mark.asyncio
     async def test_filled_within_timeout_no_retry(self):
         c = _orchestrator_client()
         # First post rests (0), then get_order reports a full fill → no cancel/retry.
