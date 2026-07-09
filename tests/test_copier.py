@@ -621,9 +621,10 @@ class TestPaperFillPriceInPosition:
         await copier.handle_trade_event(buy_event(price=0.50))
         positions = await copier.portfolio.get_open_positions()
         assert len(positions) == 1
-        # Mid-price fee curve: slip plus the price-shaped taker fee.
+        # Mid-price fee curve: slip plus the price-shaped taker fee at the
+        # 0.08 fallback rate: 0.5*1.005 + 0.08*0.5025*(1-0.5025).
         assert positions[0].entry_price > 0.50
-        assert positions[0].entry_price == pytest.approx(0.507499875)
+        assert positions[0].entry_price == pytest.approx(0.5224995)
 
     @pytest.mark.asyncio
     async def test_zero_slippage_keeps_entry_at_current_price(self, copier):
@@ -1308,3 +1309,58 @@ class TestConcurrentExitLock:
         assert len(copier._exit_locks) == 0
         exit_order = copier.clob.place_order_with_timeout.await_args.args[0]
         assert exit_order.size_usdc == pytest.approx(expected_exit_size_shares * 0.75)
+
+
+class TestResolvedFeeRateReachesActualFill:
+    """The pre-copy edge gate resolves a market-specific fee_rate (CLOB market
+    info > Gamma > config default). Prior to this fix, Order never carried it,
+    so ClobClient's paper-fill simulator silently reverted to the flat config
+    default — a different number than the one the edge gate just approved the
+    trade under. These tests pin the fill math to the RESOLVED rate."""
+
+    @pytest.mark.asyncio
+    async def test_entry_fill_price_uses_clob_resolved_rate_not_config_default(self, copier, gamma):
+        from polymarket_copier.api.clob_client import gross_buy_fill_price
+
+        gamma.get_market_fee_rate = AsyncMock(return_value=0.03)  # e.g. sports
+        await copier.handle_trade_event(buy_event(price=0.50))
+        positions = await copier.portfolio.get_open_positions()
+        assert len(positions) == 1
+        slip = copier.config.copy_trading.paper_fill_slippage_pct
+        expected = gross_buy_fill_price(0.50, slip, 0.03)
+        assert positions[0].entry_price == pytest.approx(expected)
+        # Sanity: this must differ from what the flat config default would give.
+        default_rate = copier.config.copy_trading.taker_fee_rate()
+        assert expected != pytest.approx(gross_buy_fill_price(0.50, slip, default_rate))
+
+    @pytest.mark.asyncio
+    async def test_exit_fill_price_resolves_fee_rate_fresh(self, copier, gamma):
+        from polymarket_copier.core.risk_manager import ExitReason
+        from polymarket_copier.core.monitor import PriceTick
+
+        gamma.get_market_fee_rate = AsyncMock(return_value=0.03)
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        pos = (await copier.portfolio.get_open_positions())[0]
+
+        # A different rate is authoritative by exit time (e.g. CLOB updated it).
+        # Swapping the mock (rather than mutating return_value) means its
+        # await_count only reflects calls made AFTER this point — a >=1 here
+        # proves the exit path re-resolved the rate rather than reusing a
+        # value cached from entry.
+        gamma.get_market_fee_rate = AsyncMock(return_value=0.05)
+        await copier._exit_position(pos, pos.tp_price, ExitReason.TAKE_PROFIT)
+
+        assert await copier.portfolio.position_count() == 0  # closed, not stuck open
+        assert gamma.get_market_fee_rate.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_fee_rate_at_exit_falls_back_to_config_default(self, copier, gamma):
+        from polymarket_copier.core.risk_manager import ExitReason
+
+        gamma.get_market_fee_rate = AsyncMock(return_value=0.03)
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        pos = (await copier.portfolio.get_open_positions())[0]
+
+        gamma.get_market_fee_rate = AsyncMock(return_value=None)  # unavailable at exit
+        await copier._exit_position(pos, pos.tp_price, ExitReason.TAKE_PROFIT)
+        assert await copier.portfolio.position_count() == 0  # did not error out on a missing rate

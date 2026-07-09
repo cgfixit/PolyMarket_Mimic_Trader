@@ -279,14 +279,15 @@ class TestPaperFillPrice:
     async def test_buy_fill_price_above_order_price(self, paper_client):
         result = await paper_client.place_order(buy_order(price=0.50))
         assert "fill_price" in result
-        assert result["fill_price"] == pytest.approx(gross_buy_fill_price(0.50, 0.005, 0.02))
+        # 0.08 is the conservative fallback formula rate (2% peak effective at p=0.5).
+        assert result["fill_price"] == pytest.approx(gross_buy_fill_price(0.50, 0.005, 0.08))
 
     @pytest.mark.asyncio
     async def test_sell_fill_price_below_order_price(self, paper_client):
         order = Order(market_id="mkt-a", token_id="tok-a", side="SELL", price=0.80, size_usdc=100.0)
         result = await paper_client.place_order(order)
         assert "fill_price" in result
-        assert result["fill_price"] == pytest.approx(net_sell_fill_price(0.80, 0.005, 0.02))
+        assert result["fill_price"] == pytest.approx(net_sell_fill_price(0.80, 0.005, 0.08))
 
     @pytest.mark.asyncio
     async def test_fill_price_clamped_to_one_on_buy(self, paper_client):

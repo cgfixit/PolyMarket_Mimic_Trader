@@ -261,7 +261,12 @@ class ClobClient:
             # live) so paper PnL reflects the deeper book-walk of large orders. Fee
             # is linear and size-independent, so it is NOT scaled.
             slip = self.config.copy_trading.paper_fill_slippage_pct * self._size_multiplier(order.size_usdc)
-            fee_rate = self.config.copy_trading.taker_fee_rate()
+            # Prefer the market-specific rate the copier already resolved (CLOB
+            # market info > Gamma > config default) for the pre-copy edge gate —
+            # otherwise the simulated fill uses a DIFFERENT number than the gate
+            # that just approved the trade, and paper PnL stops matching what the
+            # bot's own decision math believed it was betting on.
+            fee_rate = order.fee_rate if order.fee_rate is not None else self.config.copy_trading.taker_fee_rate()
             if order.side == "BUY":
                 fill_price = gross_buy_fill_price(order.price, slip, fee_rate)
             else:

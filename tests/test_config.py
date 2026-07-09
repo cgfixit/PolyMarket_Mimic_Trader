@@ -252,3 +252,50 @@ class TestShippedConfigMatchesCodeDefaults:
     def test_shipped_config_uses_canonical_taker_fee_rate_key(self, shipped_config):
         assert shipped_config.copy_trading.paper_taker_fee_pct is None
         assert shipped_config.copy_trading.paper_taker_fee_rate == AppConfig().copy_trading.paper_taker_fee_rate
+
+
+class TestModeValidation:
+    """AppConfig.mode must be a validated Literal — ClobClient decides real-vs-
+    simulated orders with mode == "paper" while every safety gate (geoblock
+    preflight, validate_live_config, the forward-paper gate) checks
+    mode == "live". An unrecognized value must fail loudly, not silently take
+    the real-order path with every gate no-op'd."""
+
+    def test_invalid_mode_rejected_at_construction(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            AppConfig(mode="prod")
+
+    def test_load_config_rejects_typo_mode(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "live-mode"}))
+        with pytest.raises(ConfigError, match="Invalid configuration"):
+            load_config(config_path=str(config_file))
+
+    def test_load_config_normalizes_uppercase_mode(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "LIVE"}))
+        monkeypatch.setenv("POLY_PRIVATE_KEY", "0xdeadbeef")
+        config = load_config(config_path=str(config_file))
+        assert config.mode == "live"
+
+    def test_load_config_normalizes_mixed_case_mode(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "Paper"}))
+        config = load_config(config_path=str(config_file))
+        assert config.mode == "paper"
+
+
+class TestFeeRateDefault:
+    def test_default_rate_above_every_real_category_cap(self):
+        # Real category peak rates (formula parameter, i.e. 4x the advertised
+        # headline percentage): sports 0.03 ... crypto ~0.072. The fallback
+        # must sit above all of them so an unpriced market is never
+        # under-charged when live fee data is unavailable.
+        assert AppConfig().copy_trading.paper_taker_fee_rate >= 0.072
+
+    def test_shipped_config_matches_code_default(self):
+        config = load_config(config_path="config.yaml")
+        assert config.copy_trading.paper_taker_fee_rate == AppConfig().copy_trading.paper_taker_fee_rate
+        assert config.copy_trading.paper_taker_fee_pct is None

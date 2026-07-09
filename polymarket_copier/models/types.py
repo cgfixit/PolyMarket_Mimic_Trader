@@ -36,3 +36,7 @@ class Order(BaseModel):
     price: float = Field(ge=0.0, le=1.0)
     size_usdc: float = Field(gt=0.0)
     order_type: Literal["GTC", "FOK", "GTD", "FAK"] = "GTC"
+    # Market-specific taker fee rate the caller already resolved (CLOB market
+    # info > Gamma > config default). None => the paper-fill simulator falls
+    # back to the flat config default, matching pre-existing behavior.
+    fee_rate: Optional[float] = Field(default=None, ge=0.0, le=1.0)

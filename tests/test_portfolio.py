@@ -350,3 +350,98 @@ class TestRealizedPnlLedger:
         assert (await portfolio.realized_pnl_report(year=this_year))["disposals"] == 1
         # A year with no disposals is empty, not an error.
         assert (await portfolio.realized_pnl_report(year=this_year - 5))["disposals"] == 0
+
+
+class TestForwardPaperStats:
+    @pytest.mark.asyncio
+    async def test_empty_db_zero_evidence(self, portfolio):
+        stats = await portfolio.get_forward_paper_stats()
+        assert stats == {"closed_trades": 0, "net_pnl": 0.0, "win_rate": 0.0}
+
+    @pytest.mark.asyncio
+    async def test_only_closed_paper_trades_counted(self, portfolio, rm):
+        paper_pos = await make_position(rm, market_id="mkt-p")
+        live_pos = await make_position(rm, market_id="mkt-l")
+        open_paper_pos = await make_position(rm, market_id="mkt-o")
+        await portfolio.open_position(paper_pos, mode="paper")
+        await portfolio.open_position(live_pos, mode="live")
+        await portfolio.open_position(open_paper_pos, mode="paper")
+        await portfolio.close_position(paper_pos.position_id, 0.60, ExitReason.TAKE_PROFIT)
+        await portfolio.close_position(live_pos.position_id, 0.60, ExitReason.TAKE_PROFIT)
+        # open_paper_pos stays open — must not count as closed evidence.
+        stats = await portfolio.get_forward_paper_stats()
+        assert stats["closed_trades"] == 1
+        assert stats["net_pnl"] == pytest.approx(10.0)  # (0.60-0.50)*100 shares
+        assert stats["win_rate"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_default_open_position_mode_is_paper(self, portfolio, rm):
+        pos = await make_position(rm)
+        await portfolio.open_position(pos)  # mode kwarg omitted
+        await portfolio.close_position(pos.position_id, 0.55, ExitReason.TAKE_PROFIT)
+        stats = await portfolio.get_forward_paper_stats()
+        assert stats["closed_trades"] == 1
+
+    @pytest.mark.asyncio
+    async def test_losing_paper_record_reflected_in_net_pnl(self, portfolio, rm):
+        pos = await make_position(rm)
+        await portfolio.open_position(pos, mode="paper")
+        await portfolio.close_position(pos.position_id, 0.40, ExitReason.STOP_LOSS)
+        stats = await portfolio.get_forward_paper_stats()
+        assert stats["net_pnl"] == pytest.approx(-10.0)
+        assert stats["win_rate"] == 0.0
+
+
+class TestModeColumnMigration:
+    @pytest.mark.asyncio
+    async def test_pre_existing_db_gains_nullable_mode_column(self, tmp_path):
+        """A database created before the mode column existed must migrate in
+        place WITHOUT retroactively tagging old rows as 'paper' — the bot has
+        always supported live mode, so an old row's provenance is unknown and
+        must not be able to satisfy the forward-paper gate."""
+        import aiosqlite
+
+        db_path = str(tmp_path / "legacy.db")
+        legacy_schema = """
+        CREATE TABLE positions (
+            position_id TEXT PRIMARY KEY, market_id TEXT NOT NULL,
+            token_id TEXT NOT NULL, trader_address TEXT NOT NULL,
+            entry_price REAL NOT NULL, tp_price REAL NOT NULL,
+            sl_price REAL NOT NULL, peak_price REAL NOT NULL,
+            size_shares REAL NOT NULL, entry_time REAL NOT NULL,
+            resolve_time REAL, status TEXT NOT NULL DEFAULT 'open',
+            exit_price REAL, exit_reason TEXT, realized_pnl REAL, closed_at REAL
+        );
+        """
+        async with aiosqlite.connect(db_path) as db:
+            await db.executescript(legacy_schema)
+            # This row represents a pre-existing LIVE position (real money) —
+            # the exact case the review flagged: retroactively tagging it
+            # 'paper' would let live evidence satisfy a paper-only gate.
+            await db.execute(
+                """INSERT INTO positions
+                   (position_id, market_id, token_id, trader_address, entry_price,
+                    tp_price, sl_price, peak_price, size_shares, entry_time,
+                    status, realized_pnl)
+                   VALUES ('old-live-1','m','t','0xw',0.5,0.7,0.4,0.5,100,1000,'closed',12.5)"""
+            )
+            await db.commit()
+
+        pm = PortfolioManager(db_path=db_path)
+        await pm.init()  # must not raise; adds the mode column
+        try:
+            stats = await pm.get_forward_paper_stats()
+            assert stats["closed_trades"] == 0  # legacy row excluded, not assumed paper
+            assert stats["net_pnl"] == 0.0
+        finally:
+            await pm.close()
+
+    @pytest.mark.asyncio
+    async def test_migration_is_idempotent(self, tmp_path):
+        db_path = str(tmp_path / "reopen.db")
+        pm1 = PortfolioManager(db_path=db_path)
+        await pm1.init()
+        await pm1.close()
+        pm2 = PortfolioManager(db_path=db_path)
+        await pm2.init()  # must not raise "duplicate column" on second init
+        await pm2.close()

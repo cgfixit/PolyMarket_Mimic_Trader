@@ -7,7 +7,7 @@ import asyncio
 import signal
 import sys
 import time
-from typing import Optional
+from typing import Literal, Optional
 
 import aiohttp
 
@@ -33,6 +33,37 @@ def _update_tracker_metrics(tracker: TrackerClient) -> None:
         metrics.TRADER_SCORE.labels(trader_address=t.stats.address, rank=str(t.rank)).set(t.score)
 
 
+async def enforce_forward_paper_gate(config, portfolio: PortfolioManager, logger=None) -> None:
+    """Live-readiness gate (readiness plan "PR 4" skeleton): forward-paper evidence.
+
+    Live mode refuses to start until the database holds a minimum sample of
+    closed PAPER trades with positive net PnL. Necessary, not sufficient —
+    paper fills remain a simulation. Never gates paper mode. Raises
+    ConfigError (not a bare assert) so main() reports it the same clean way
+    as every other startup validation failure.
+    """
+    if config.mode != "live" or not config.forward_paper_gate_enabled:
+        return
+    stats = await portfolio.get_forward_paper_stats()
+    min_trades = config.forward_paper_min_trades
+    min_pnl = config.forward_paper_min_net_pnl_usd
+    if stats["closed_trades"] < min_trades or stats["net_pnl"] <= min_pnl:
+        raise ConfigError(
+            "Forward-paper gate: live mode requires >= "
+            f"{min_trades} closed paper trades with net PnL > ${min_pnl:.2f}; "
+            f"found {stats['closed_trades']} trades, net ${stats['net_pnl']:.2f}. "
+            "Run paper mode longer, or set forward_paper_gate_enabled: false "
+            "at your own risk."
+        )
+    if logger:
+        logger.info(
+            "Forward-paper gate passed: %d closed paper trades, net $%.2f (win rate %.1f%%)",
+            stats["closed_trades"],
+            stats["net_pnl"],
+            stats["win_rate"] * 100,
+        )
+
+
 async def _enforce_live_geoblock_preflight(config, session: aiohttp.ClientSession, logger) -> None:
     """Fail closed before live order placement from Polymarket-blocked regions."""
     if config.mode != "live":
@@ -56,7 +87,7 @@ async def _enforce_live_geoblock_preflight(config, session: aiohttp.ClientSessio
     logger.info("Polymarket geoblock preflight passed for %s%s", country, f"-{region}" if region else "")
 
 
-async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None) -> None:
+async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["paper", "live"]] = None) -> None:
     config = load_config(config_path=config_path)
     if mode:
         config.mode = mode
@@ -113,6 +144,13 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[str] = None)
 
     portfolio = PortfolioManager(db_path="data/positions.db")
     await portfolio.init()
+
+    try:
+        await enforce_forward_paper_gate(config, portfolio, logger)
+    except Exception:
+        await portfolio.close()
+        await shared_session.close()
+        raise
 
     startup_positions = await portfolio.get_open_positions()
 
