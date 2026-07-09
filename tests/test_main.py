@@ -12,6 +12,7 @@ from polymarket_copier.core.risk_manager import ExitReason, RiskConfig, RiskMana
 from polymarket_copier.main import (
     POLYMARKET_GEOBLOCK_URL,
     _enforce_live_geoblock_preflight,
+    _install_shutdown_handlers,
     enforce_forward_paper_gate,
     run_bot,
 )
@@ -103,6 +104,30 @@ async def test_cli_live_override_revalidates_live_credentials(tmp_path, monkeypa
 
     with pytest.raises(ConfigError, match="POLY_PRIVATE_KEY required"):
         await run_bot(config_path=str(config_file), mode="live")
+
+
+def test_install_shutdown_handlers_falls_back_when_add_signal_handler_missing(monkeypatch):
+    """Windows ProactorEventLoop raises NotImplementedError — must not crash."""
+    calls: list[str] = []
+
+    class _Loop:
+        def add_signal_handler(self, sig, callback):  # noqa: ARG002
+            raise NotImplementedError("not supported on this platform")
+
+    import signal as signal_mod
+
+    registered: list[int] = []
+
+    def _fake_signal(sig, handler):  # noqa: ARG002
+        registered.append(sig)
+        return None
+
+    monkeypatch.setattr(signal_mod, "signal", _fake_signal)
+    _install_shutdown_handlers(_Loop(), lambda: calls.append("stop"))
+
+    assert signal_mod.SIGINT in registered
+    # SIGTERM may or may not be registered depending on platform; at least one ok.
+    assert registered
 
 
 class TestForwardPaperGate:
