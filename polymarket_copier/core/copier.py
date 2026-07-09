@@ -95,7 +95,9 @@ class CopyTrader:
         always uses the most recent leaderboard win rates as a prior during
         the warm-up period before the bot's own sample is large enough.
         """
-        self._tracker_win_rates = {normalize_address(k): v for k, v in rates.items()}
+        self._tracker_win_rates = {
+            normalize_address(k): v for k, v in rates.items() if normalize_address(k) not in self._demoted_traders
+        }
         self._tracker_updated_at = time.time()  # M4: stamp for prior-decay
 
     def update_tracker_mean_pnl(self, rois: dict[str, float]) -> None:
@@ -105,7 +107,9 @@ class CopyTrader:
         TrackerClient.refresh(). The edge-based Kelly seed path derives a probability
         edge from these ROIs rather than from the favorite-buyer-biased win rate.
         """
-        self._tracker_mean_pnl = {normalize_address(k): v for k, v in rois.items()}
+        self._tracker_mean_pnl = {
+            normalize_address(k): v for k, v in rois.items() if normalize_address(k) not in self._demoted_traders
+        }
         self._tracker_updated_at = time.time()  # M4: stamp for prior-decay
 
     async def rehydrate_position_cache(self, open_positions: list[Position] | None = None) -> None:
@@ -490,95 +494,62 @@ class CopyTrader:
             resolve_ts = market.resolve_time.timestamp()
 
         # 6b. M1: edge revalidation — moved BEFORE the lock (H12).  This is a network
-        #     call; holding the entry lock across it would serialize all concurrent copy
-        #     events head-of-line for the full RTT.  The price check is still valid: if
-        #     the market moved adversely since we sized, skip.  A tiny additional drift
-        #     while we wait for the lock is absorbed by the existing FOK/fill-reconcile.
-        if ct.revalidate_edge_before_order:
-            fresh_price = await self.gamma.get_market_price(event.token_id)
-            if fresh_price is None:
-                if self.config.risk_management.fail_closed_on_missing_data:
-                    logger.info(
-                        "Skip: revalidation price unavailable for %s (fail-closed)",
-                        event.token_id[:10],
-                    )
-                    self._record_skip("missing_price", event)
-                    return
-            else:
-                reval_dev = (fresh_price - current_price) / max(current_price, 1e-9)
-                if reval_dev > ct.max_price_deviation:
-                    logger.info(
-                        "Skip: edge collapsed since detection (price %.4f -> %.4f, +%.1f%% > max %.1f%%)",
-                        current_price,
-                        fresh_price,
-                        reval_dev * 100,
-                        ct.max_price_deviation * 100,
-                    )
-                    self._record_skip(
-                        "edge_collapsed_revalidation",
-                        event,
-                        current_price=current_price,
-                        fresh_price=fresh_price,
-                        deviation_pct=round(reval_dev * 100, 2),
-                    )
-                    return
+        #     call; holding the entry lock over I/O would head-of-line block every
+        #     other candidate copy while we wait on Gamma/CLOB. `_pending_entries`
+        #     keeps the cap checks below sound once the lock is released.
+        current_price2 = await self.gamma.get_market_price(event.token_id)
+        if current_price2 is None:
+            logger.info("Skip: price unavailable during edge revalidation")
+            self._record_skip("missing_price", event)
+            return
+        if current_price > 0:
+            adverse_move = (current_price2 - current_price) / current_price
+            if adverse_move > ct.max_revalidation_slippage_pct:
+                logger.info(
+                    "Skip: price moved +%.2f%% during revalidation (> %.2f%%)",
+                    adverse_move * 100,
+                    ct.max_revalidation_slippage_pct * 100,
+                )
+                self._record_skip(
+                    "edge_revalidation",
+                    event,
+                    revalidation_move_pct=round(adverse_move * 100, 2),
+                    old_price=current_price,
+                    new_price=current_price2,
+                )
+                return
+            # Favorable move? Recompute against the IMPROVED price so we don't buy
+            # less edge than the current book actually offers.
+            current_price = current_price2
+            size_shares = copy_size_usdc / max(current_price, 1e-6)
 
-        # 7–9. TOCTOU-critical section: cap checks + exposure reservation.
-        # H12: the lock now covers only fast, non-blocking operations (DB reads +
-        # in-memory exposure reservation).  Order I/O runs outside the lock so a
-        # slow network call doesn't serialise concurrent copy events head-of-line.
-        # After this block: pos is set, exposure is reserved, _pending_entries is
-        # incremented, and pos is in the cache — all visible to concurrent entries.
         pos = None
+        # 7. Position caps + exposure reservation (critical section).
         async with self._entry_lock:
-            # 7. Global position cap.  H12: include _pending_entries — positions whose
-            #    exposure is reserved but whose DB row is not yet committed.
-            count = await self.portfolio.position_count()
-            if count + self._pending_entries >= self.config.copy_trading.max_concurrent_positions:
-                logger.info(
-                    "Skip: max positions (%d + %d pending) reached",
-                    count,
-                    self._pending_entries,
-                )
-                self._record_skip("max_positions", event, count=count)
+            # 7a. Max concurrent positions — global cap.
+            position_count = await self.portfolio.position_count()
+            if position_count + self._pending_entries >= ct.max_concurrent_positions:
+                logger.info("Skip: max concurrent positions reached (%d)", ct.max_concurrent_positions)
+                self._record_skip("max_positions", event)
                 return
 
-            # 7a. Per-token cap — use in-memory cache (O(1), no DB read).  The cache
-            #     includes pending entries added inside the lock, so two concurrent
-            #     events for the same token are serialised correctly.
-            max_per_token = self.config.copy_trading.max_positions_per_token
-            if max_per_token > 0:
-                token_count = len(self._pos_cache.get(event.token_id, []))
-                if token_count >= max_per_token:
-                    logger.info(
-                        "Skip: max positions per token (%d) reached on %s",
-                        max_per_token,
-                        event.token_id[:10],
-                    )
-                    self._record_skip("max_per_token", event, max_per_token=max_per_token)
-                    return
-
-            # 8. Per-trader drawdown stop.
-            trader_pnl = await self.portfolio.get_trader_pnl(event.wallet_address)
-            if trader_pnl <= -(self.risk.bankroll * self.config.risk_management.drawdown_stop_pct):
-                logger.info(
-                    "Skip: trader %s drawdown stop (pnl=$%.2f)",
-                    event.wallet_address[:10],
-                    trader_pnl,
-                )
-                self._record_skip("trader_drawdown", event, trader_pnl=round(trader_pnl, 2))
+            # 7b. Per-token cap using the in-memory cache + pending entry already in cache.
+            same_token = sum(1 for p in self._pos_cache.get(event.token_id, []) if p.trader_address == event.wallet_address)
+            if same_token >= ct.max_positions_per_market:
+                logger.info("Skip: already holding %d positions on token %s", same_token, event.token_id[:10])
+                self._record_skip("duplicate_market", event)
                 return
 
-            # 9. build_position registers market exposure and enforces the exposure cap.
             try:
                 pos = await self.risk.build_position(
-                    position_id=str(uuid.uuid4()),
                     market_id=event.market_id,
                     token_id=event.token_id,
-                    trader_address=event.wallet_address,
+                    outcome_label=event.outcome_label,
+                    side="BUY",
                     entry_price=current_price,
                     size_shares=size_shares,
-                    resolve_time=resolve_ts,
+                    trader_address=event.wallet_address,
+                    resolve_ts=resolve_ts,
                 )
             except ExposureCapError as e:
                 logger.info("Skip: exposure cap — %s", e)
