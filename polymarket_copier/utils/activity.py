@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 
+def _float_or_none(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def activity_side(raw: dict) -> str:
     """Return BUY/SELL from either explicit side or buy/sell activity type."""
     side = str(raw.get("side", "")).strip().upper()
@@ -42,5 +49,13 @@ def activity_token_id(raw: dict) -> str:
 
 
 def activity_notional_usdc(raw: dict) -> float:
-    """Return activity notional in USDC, preferring the current usdcSize field."""
-    return float(raw.get("usdcSize", raw.get("size", 0)))
+    """Return activity notional in USDC, preferring usdcSize over derived size * price."""
+    usdc_size = _float_or_none(raw.get("usdcSize"))
+    if usdc_size is not None:
+        return usdc_size
+
+    size = _float_or_none(raw.get("size"))
+    price = _float_or_none(raw.get("price"))
+    if size is None or price is None or price <= 0:
+        return 0.0
+    return size * price

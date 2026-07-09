@@ -38,7 +38,7 @@ class TestParseTradeEvent:
         assert event is not None
         assert event.trade_type == TradeType.BUY
         assert event.price == 0.65
-        assert event.size_usdc == 100
+        assert event.size_usdc == pytest.approx(65.0)
         assert event.wallet_address == "0xabc"
 
     def test_parse_sell(self):
