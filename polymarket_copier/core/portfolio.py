@@ -153,49 +153,53 @@ class PortfolioManager:
         position_id: str,
         exit_price: float,
         reason: ExitReason,
+        filled_shares: Optional[float] = None,
     ) -> Optional[float]:
-        """Mark a position closed (guarded against double-close), record a tax lot, and return realized PnL.
-
-        Returns the realized PnL (float, possibly 0.0 on a genuine break-even) on success,
-        or None if the position was not found or was already closed by a concurrent exit.
-        Callers must treat None as "already handled" and skip record_exit / metrics.
-        """
+        """Record a filled disposal, reducing or closing the position as appropriate."""
         db = self._require_db()
         pos = await self.get_position(position_id)
         if pos is None:
             logger.warning("Position %s not found for closing", position_id)
             return None
-        pnl = pos.pnl_at(exit_price)
+
+        shares = pos.size_shares if filled_shares is None else filled_shares
+        if not 0.0 < shares <= pos.size_shares:
+            raise ValueError(f"filled_shares must be in (0, {pos.size_shares}], got {shares}")
+        pnl = pos.pnl_at(exit_price) * shares / pos.size_shares
         closed_at = time.time()
-        # C4 guard: `AND status='open'` makes this UPDATE a no-op if another
-        # coroutine already closed the position (WS tick race, poll sweep, or
-        # SOURCE_EXIT arriving simultaneously). The rowcount check prevents
-        # double-recording the tax lot and double-calling record_exit.
-        cur = await db.execute(
-            """UPDATE positions SET status='closed', exit_price=?, exit_reason=?,
-               realized_pnl=?, closed_at=? WHERE position_id=? AND status='open'""",
-            (exit_price, reason.name, pnl, closed_at, position_id),
-        )
+
+        if shares < pos.size_shares:
+            cur = await db.execute(
+                """UPDATE positions SET size_shares=?, realized_pnl=COALESCE(realized_pnl, 0) + ?
+                   WHERE position_id=? AND status='open' AND size_shares=?""",
+                (pos.size_shares - shares, pnl, position_id, pos.size_shares),
+            )
+        else:
+            cur = await db.execute(
+                """UPDATE positions SET status='closed', exit_price=?, exit_reason=?,
+                   realized_pnl=COALESCE(realized_pnl, 0) + ?, closed_at=?
+                   WHERE position_id=? AND status='open'""",
+                (exit_price, reason.name, pnl, closed_at, position_id),
+            )
         if cur.rowcount != 1:
-            logger.warning("Position %s already closed — double-exit race prevented", position_id)
+            logger.warning("Position %s was already closed or changed", position_id)
             return None
-        # Record an immutable tax lot in the SAME transaction as the close, so the
-        # ledger can never drift from the positions table.
-        cost_basis = pos.entry_price * pos.size_shares
-        proceeds = exit_price * pos.size_shares
+
+        cost_basis = pos.entry_price * shares
+        proceeds = exit_price * shares
         holding_seconds = max(0.0, closed_at - pos.entry_time)
         term = "long" if holding_seconds > _LONG_TERM_HOLDING_SECONDS else "short"
         await db.execute(
             """INSERT INTO realized_lots
-               (position_id, token_id, trader_address, shares, cost_basis,
-                proceeds, realized_pnl, acquired_at, disposed_at,
-                holding_seconds, term)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (position_id, token_id, trader_address, shares, cost_basis,
+                 proceeds, realized_pnl, acquired_at, disposed_at,
+                 holding_seconds, term)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 position_id,
                 pos.token_id,
                 pos.trader_address,
-                pos.size_shares,
+                shares,
                 cost_basis,
                 proceeds,
                 pnl,
@@ -206,7 +210,8 @@ class PortfolioManager:
             ),
         )
         await db.commit()
-        logger.info("Position closed: %s reason=%s pnl=%.4f", position_id, reason.name, pnl)
+        action = "reduced" if shares < pos.size_shares else "closed"
+        logger.info("Position %s: %s reason=%s pnl=%.4f", action, position_id, reason.name, pnl)
         return pnl
 
     async def realized_pnl_report(self, year: Optional[int] = None) -> dict:

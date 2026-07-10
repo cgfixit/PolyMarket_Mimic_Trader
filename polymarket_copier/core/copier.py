@@ -7,6 +7,7 @@ import logging
 import math
 import time
 import uuid
+from dataclasses import replace
 from typing import Any
 
 from polymarket_copier.api.clob_client import (
@@ -137,9 +138,11 @@ class CopyTrader:
         """Remove a position from the in-memory cache (H11 helper)."""
         bucket = self._pos_cache.get(pos.token_id)
         if bucket:
-            try:
-                bucket.remove(pos)
-            except ValueError:
+            for cached in bucket:
+                if cached.position_id == pos.position_id:
+                    bucket.remove(cached)
+                    break
+            else:
                 logger.warning(
                     "Position %s not found in cache for token %s — may indicate cache desync",
                     pos.position_id,
@@ -147,6 +150,18 @@ class CopyTrader:
                 )
             if not bucket:
                 del self._pos_cache[pos.token_id]
+
+    def _update_pos_size_in_cache(self, pos: Position) -> None:
+        """Keep the warm cache aligned after a partially filled exit."""
+        for cached in self._pos_cache.get(pos.token_id, []):
+            if cached.position_id == pos.position_id:
+                cached.size_shares = pos.size_shares
+                return
+        logger.warning(
+            "Position %s not found in cache for token %s - may indicate cache desync",
+            pos.position_id,
+            pos.token_id,
+        )
 
     async def _flush_peak_cache(self) -> None:
         """Persist debounced peak_price updates to SQLite in a single batch commit (H11)."""
@@ -900,9 +915,17 @@ class CopyTrader:
             # No confirmed fill — leave position open for re-evaluation next tick.
             return
 
+        full_fill = filled_shares >= exit_shares or math.isclose(filled_shares, exit_shares, rel_tol=1e-6)
+        closed_shares = exit_shares if full_fill else filled_shares
+        closed_pos = pos if full_fill else replace(pos, size_shares=closed_shares)
         # C4: `AND status='open'` in close_position() is the DB-level guard that
         # prevents a double-record even if the application lock were somehow bypassed.
-        pnl = await self.portfolio.close_position(pos.position_id, avg_fill_price, reason)
+        pnl = await self.portfolio.close_position(
+            pos.position_id,
+            avg_fill_price,
+            reason,
+            filled_shares=closed_shares,
+        )
         if pnl is None:
             # close_position returns None when the position was not found or was already
             # closed by a concurrent exit path (C4 double-exit race guard). Do not
@@ -912,12 +935,44 @@ class CopyTrader:
                 pos.position_id,
             )
             return
+
+        if not full_fill:
+            pos.size_shares = exit_shares - closed_shares
+            self._update_pos_size_in_cache(pos)
+            await self.risk.record_exit(closed_pos, avg_fill_price, reason)
+            metrics.EXITS.labels(reason=reason.name).inc()
+            metrics.EXIT_PNL.labels(reason=reason.name).observe(pnl)
+            logger.warning(
+                "Partial exit [%s]: %s pnl=$%.4f @ %.4f (filled=%.2f, remaining=%.2f shares)",
+                reason.name,
+                pos.position_id,
+                pnl,
+                avg_fill_price,
+                closed_shares,
+                pos.size_shares,
+            )
+            log_event(
+                logger,
+                "position_partially_closed",
+                position_id=pos.position_id,
+                reason=reason.name,
+                pnl=round(pnl, 4),
+                exit_price=avg_fill_price,
+                entry_price=pos.entry_price,
+                filled_shares=round(closed_shares, 4),
+                remaining_shares=round(pos.size_shares, 4),
+                requested_shares=round(exit_shares, 4),
+                trader=pos.trader_address,
+                market_id=pos.market_id,
+                token_id=pos.token_id,
+            )
+            return
         # H11: position is committed-closed in the DB; evict from in-memory cache and
         # remove any pending peak write that would re-open the DB row's peak_price.
         self._remove_pos_from_cache(pos)
         self._peak_dirty.pop(pos.position_id, None)
 
-        await self.risk.record_exit(pos, avg_fill_price, reason)
+        await self.risk.record_exit(closed_pos, avg_fill_price, reason)
 
         if self.monitor:
             self.monitor.unsubscribe_token(pos.token_id)
