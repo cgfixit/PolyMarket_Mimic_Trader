@@ -140,7 +140,6 @@ Full detail with reproduction output: `docs/DUE_DILIGENCE_AUDIT_2026-07-08.md`.
   interleavable commits).
 - **DD-12** Wallets re-added after removal skip cold-start priming (stale seen-set replay,
   gated only by the staleness window).
-- **DD-13** `activity_notional_usdc` falls back to `size` (shares) as if it were USDC.
 - **DD-14** Daily-loss "halt" actually liquidates all open positions (pinned as current
   behavior by `test_daily_loss_breach_flags_every_open_position_for_exit`; docs disagree).
 - **DD-23** The tracker's `type=TRADE` activity fetch (commit `a024771`) can no longer

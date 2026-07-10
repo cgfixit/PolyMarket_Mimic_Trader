@@ -252,15 +252,19 @@ failure mode, **S3** = doc rot that will cause a wrong operational decision.
   sets it to 0 ("disable the gate", per the config comment) re-enables the cold-start bug the
   guard exists to prevent.
 
-### DD-13. `activity_notional_usdc` falls back to share count as if it were USDC
+### DD-13. `activity_notional_usdc` falls back to share count as if it were USDC — FIXED upstream, commit `e3ecef6` (merged to `main` as `e3d464e`)
 
 - **Claim** (`utils/activity.py::activity_notional_usdc` docstring: *"Return activity notional
   in USDC"*).
-- **Reality:** `float(raw.get("usdcSize", raw.get("size", 0)))` — the legacy fallback `size`
-  is a **share count** on the current Data API. If `usdcSize` is ever absent, sizing treats
-  shares as dollars (`event.size_usdc`), inflating `copy_size_usdc` by 1/price (20× at a $0.05
-  token) before the `max_trade_pct` cap truncates it — every copy silently maxes out at the
-  cap, and the tracker's ROI stats (same helper) corrupt in the same direction.
+- **Original reality (at audit commit `05ef1cd`):** `float(raw.get("usdcSize", raw.get("size", 0)))`
+  treated the legacy fallback `size` as if it were a USDC notional, even though current Data API
+  rows use it as a share count.
+- **Current reality [measured against `origin/main` @ `e3d464e`]:** the helper now prefers
+  `usdcSize`, otherwise derives notional as `size * price`, and fails closed to `0.0` when a safe
+  dollar notional cannot be derived. The merged regression coverage is
+  `tests/test_activity.py::test_activity_helpers_keep_legacy_shape`,
+  `tests/test_activity.py::test_activity_helpers_fail_closed_when_notional_cannot_be_derived`,
+  and `tests/test_monitor.py::TestParseTradeEvent::test_parse_buy`.
 
 ### DD-14. "Daily loss limit halts trading" actually force-liquidates the whole portfolio
 
@@ -399,12 +403,11 @@ class as CLAUDE.md's unwired-field warning, but triggered by the README itself.
 | DD-10 | S2 | Live reconcile degrades to assume-full-fill at quote (get_order calls now bounded — `a0a0505` — but the FOK/FAK fallback itself is unchanged) |
 | DD-11 | S2 | Tax-lot atomicity by convention only (shared-connection commits) |
 | DD-12 | S2 | Re-added wallets skip cold-start priming |
-| DD-13 | S2 | Notional helper falls back to shares-as-USDC |
 | DD-14 | S2 | "Halt" on daily loss is actually full liquidation |
 | DD-15–22 | S3 | Doc rot: scoring formula, TP/SL tables, trailing formula, Kelly story, fee-aware sizing, metric names, `kelly_fraction`, misc |
 | DD-23 | S2 | `type=TRADE` fetch filter (`a024771`) makes the tracker's documented redemption-awareness dead code; hold-to-resolution wins now silently dropped |
 
-**Dispositions.** Everything above (excluding the now-fixed DD-02) is *reported, not fixed*:
+**Dispositions.** Everything above (excluding the now-fixed DD-02 and DD-13) is *reported, not fixed*:
 per CLAUDE.md's escalation ladder, DD-01, DD-03…DD-06, and DD-10…DD-14 touch trading math,
 order flow, or live-mode gating (Tier 2/3 — ask first). What this PR does ship:
 `tests/test_invariants.py` pins every invariant that currently holds (so a weaker model can't
