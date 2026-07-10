@@ -1310,6 +1310,44 @@ class TestConcurrentExitLock:
         exit_order = copier.clob.place_order_with_timeout.await_args.args[0]
         assert exit_order.size_usdc == pytest.approx(expected_exit_size_shares * 0.75)
 
+    @pytest.mark.asyncio
+    async def test_partial_exit_keeps_remainder_open_and_tracked(self, copier):
+        await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+        pos = (await copier.portfolio.get_open_positions())[0]
+        entry_price = pos.entry_price
+        initial_shares = pos.size_shares
+        initial_exposure = copier.risk.market_exposure(pos.market_id)
+        filled_shares = initial_shares / 2
+        exit_price = pos.tp_price
+        copier.clob.place_order_with_timeout = AsyncMock(
+            return_value={"status": "LIVE", "filled_size": filled_shares, "avg_price": exit_price}
+        )
+
+        await copier._exit_position(pos, exit_price, ExitReason.TAKE_PROFIT)
+
+        remaining = await copier.portfolio.get_position(pos.position_id)
+        assert remaining is not None
+        assert remaining.size_shares == pytest.approx(filled_shares)
+        assert pos.size_shares == pytest.approx(filled_shares)
+        assert copier._pos_cache[pos.token_id] == [pos]
+        assert copier.risk.market_exposure(pos.market_id) == pytest.approx(
+            initial_exposure - entry_price * filled_shares
+        )
+        report = await copier.portfolio.realized_pnl_report()
+        assert report["disposals"] == 1
+        assert report["net_realized_pnl"] == pytest.approx((exit_price - entry_price) * filled_shares)
+
+        await copier._exit_position(remaining, exit_price, ExitReason.TAKE_PROFIT)
+
+        assert await copier.portfolio.position_count() == 0
+        assert pos.token_id not in copier._pos_cache
+        report = await copier.portfolio.realized_pnl_report()
+        assert report["disposals"] == 2
+        assert report["net_realized_pnl"] == pytest.approx((exit_price - entry_price) * initial_shares)
+        assert await copier.portfolio.get_trader_pnl(pos.trader_address) == pytest.approx(
+            (exit_price - entry_price) * initial_shares
+        )
+
 
 class TestResolvedFeeRateReachesActualFill:
     """The pre-copy edge gate resolves a market-specific fee_rate (CLOB market
