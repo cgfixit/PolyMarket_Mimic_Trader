@@ -240,13 +240,10 @@ class TestTradeMonitor:
                 sent.append(msg)
                 monitor._stop_event.set()
 
-        async def immediate_timeout(_aw, timeout=None):  # noqa: ARG001
+        async def immediate_timeout():
             raise TimeoutError
 
-        monkeypatch.setattr(
-            "polymarket_copier.core.monitor.asyncio.wait_for",
-            immediate_timeout,
-        )
+        monkeypatch.setattr(monitor._subscription_update_requested, "wait", immediate_timeout)
 
         await monitor._ws_heartbeat(FakeWS())
         assert sent == ["PING"]
@@ -262,7 +259,7 @@ class TestTradeMonitor:
             async def send(self, msg):
                 sent.append(msg)
 
-        async def first_wake_then_stop(_aw, timeout=None):  # noqa: ARG001
+        async def first_wake_then_stop():
             nonlocal wait_calls
             wait_calls += 1
             if wait_calls == 1:
@@ -273,10 +270,7 @@ class TestTradeMonitor:
         async def no_sub(_ws):
             return None
 
-        monkeypatch.setattr(
-            "polymarket_copier.core.monitor.asyncio.wait_for",
-            first_wake_then_stop,
-        )
+        monkeypatch.setattr(monitor._subscription_update_requested, "wait", first_wake_then_stop)
         monkeypatch.setattr(monitor, "_maybe_update_subscription", no_sub)
 
         await monitor._ws_heartbeat(FakeWS())
@@ -656,7 +650,7 @@ class TestMonitorRunAndSubscriptionRefresh:
             async def send(self, msg):
                 sent.append(msg)
 
-        async def wake_sub_then_timeout_ping(_aw, timeout=None):  # noqa: ARG001
+        async def wake_sub_then_timeout_ping():
             """First wait: subscription Event is set; second: interval elapsed → PING."""
             nonlocal wait_calls
             wait_calls += 1
@@ -665,10 +659,7 @@ class TestMonitorRunAndSubscriptionRefresh:
             monitor._stop_event.set()
             raise TimeoutError
 
-        monkeypatch.setattr(
-            "polymarket_copier.core.monitor.asyncio.wait_for",
-            wake_sub_then_timeout_ping,
-        )
+        monkeypatch.setattr(monitor._subscription_update_requested, "wait", wake_sub_then_timeout_ping)
 
         await monitor._ws_heartbeat(FakeWS())
 
