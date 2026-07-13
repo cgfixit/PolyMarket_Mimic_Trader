@@ -674,6 +674,45 @@ class TestMonitorRunAndSubscriptionRefresh:
         assert monitor._last_subscribed == {"tok-1"}
         assert wait_calls == 2
 
+    @pytest.mark.asyncio
+    async def test_initial_ws_subscription_is_sent_once(self, monkeypatch):
+        """Initial sync must update the snapshot so the first message does not resend it."""
+        sent = []
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=_noop_trade)
+        monitor.subscribe_token("tok-1")
+
+        class FakeWS:
+            def __init__(self):
+                self._messages = ["[]"]
+
+            async def send(self, msg):
+                sent.append(json.loads(msg))
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._messages:
+                    return self._messages.pop()
+                raise StopAsyncIteration
+
+        class FakeConnection:
+            async def __aenter__(self):
+                return ws
+
+            async def __aexit__(self, *exc):
+                return False
+
+        ws = FakeWS()
+        monkeypatch.setattr(
+            "polymarket_copier.core.monitor.websockets.connect",
+            lambda *args, **kwargs: FakeConnection(),
+        )
+
+        await monitor._ws_connect_and_listen()
+
+        assert sent == [{"type": "market", "assets_ids": ["tok-1"]}]
+
 
 # ─── C5: set_wallets — rebalance without KeyError on new wallets ──────────────
 
