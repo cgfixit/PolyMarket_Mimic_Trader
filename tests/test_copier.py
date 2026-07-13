@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from polymarket_copier.api.clob_client import ClobClient
+from polymarket_copier.api.clob_client import ClobClient, gross_buy_fill_price
 from polymarket_copier.config import AppConfig
 from polymarket_copier.core.copier import CopyTrader
 from polymarket_copier.core.monitor import TradeEvent, TradeType
@@ -77,19 +77,18 @@ class TestHandleTradeEvent:
 
     @pytest.mark.asyncio
     async def test_copy_size_is_conservative(self, copier):
-        # size_multiplier 0.5 → 50 USDC, well under 2% bankroll cap ($200)
+        # size_multiplier 0.5 gives a $50 all-in budget, including costs.
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0))
         positions = await copier.portfolio.get_open_positions()
         assert len(positions) == 1
-        # 50 USDC / 0.50 price = 100 shares
-        assert positions[0].size_shares == pytest.approx(100.0)
+        assert positions[0].entry_price * positions[0].size_shares == pytest.approx(50.0)
 
     @pytest.mark.asyncio
     async def test_copy_size_capped_at_bankroll_pct(self, copier):
-        # Large source trade → capped at 2% of $10k = $200 → 400 shares @ 0.50
+        # Large source trade is capped at a $200 all-in budget.
         await copier.handle_trade_event(buy_event(price=0.50, size=100_000.0))
         positions = await copier.portfolio.get_open_positions()
-        assert positions[0].size_shares == pytest.approx(400.0)
+        assert positions[0].entry_price * positions[0].size_shares == pytest.approx(200.0)
 
     @pytest.mark.asyncio
     async def test_sell_event_skipped(self, copier):
@@ -498,8 +497,8 @@ class TestKellySizing:
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
         assert len(open_pos) == 1
-        # Flat: 0.5*100 = $50 → 100 shares @ 0.50.
-        assert open_pos[0].size_shares == pytest.approx(100.0)
+        # Flat sizing uses a $50 all-in budget.
+        assert open_pos[0].entry_price * open_pos[0].size_shares == pytest.approx(50.0)
 
     @pytest.mark.asyncio
     async def test_flat_fallback_when_sample_too_small(self, copier):
@@ -510,7 +509,7 @@ class TestKellySizing:
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
         assert len(open_pos) == 1
-        assert open_pos[0].size_shares == pytest.approx(100.0)
+        assert open_pos[0].entry_price * open_pos[0].size_shares == pytest.approx(50.0)
 
     @pytest.mark.asyncio
     async def test_kelly_path_when_enabled_with_sample(self, copier):
@@ -525,8 +524,8 @@ class TestKellySizing:
         open_pos = await copier.portfolio.get_open_positions()
         assert len(open_pos) == 1
         # f* = 0.7 - 0.3 = 0.4; raw = 10000*0.4*0.25 = 1000; cap = 2% of 10k = 200.
-        # Clamped to $200 → 400 shares @ 0.50. (Flat would be 100 shares.)
-        assert open_pos[0].size_shares == pytest.approx(400.0)
+        # Kelly sizing is clamped to a $200 all-in budget.
+        assert open_pos[0].entry_price * open_pos[0].size_shares == pytest.approx(200.0)
 
     @pytest.mark.asyncio
     async def test_kelly_no_edge_skips_when_enabled(self, copier):
@@ -649,27 +648,26 @@ class TestFillReconciliation:
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0))
         positions = await copier.portfolio.get_open_positions()
         assert len(positions) == 1
-        # 50 USDC / 0.50 = 100 shares, fully filled, unchanged from prior behaviour.
-        assert positions[0].size_shares == pytest.approx(100.0)
-        # Full registered notional remains reserved (entry $0.50 * 100 = $50).
+        # The full fill stays within the $50 all-in copy budget.
+        assert positions[0].entry_price * positions[0].size_shares == pytest.approx(50.0)
+        # The full $50 budget remains reserved.
         assert copier.risk.market_exposure("mkt-a") == pytest.approx(50.0)
 
     @pytest.mark.asyncio
     async def test_partial_fill_halves_size_and_releases_half_exposure(self, copier):
         """A 50% fill → position size halved and half the registered exposure freed."""
-        # Copy size = min(0.5*100, 0.02*10000) = $50 → 100 shares @ 0.50.
-        # Registered notional = 0.50 * 100 = $50.
+        # Half of the shares derived from the $50 all-in budget fill.
         copier.clob.place_order = AsyncMock(
             return_value={
                 "status": "LIVE",
-                "filled_size": 50.0,
+                "filled_size": 25.0 / gross_buy_fill_price(0.50, 0.005, 0.08),
                 "avg_price": 0.50,
             }
         )
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, market="mkt-p"))
         positions = await copier.portfolio.get_open_positions()
         assert len(positions) == 1
-        assert positions[0].size_shares == pytest.approx(50.0)
+        assert positions[0].size_shares == pytest.approx(25.0 / gross_buy_fill_price(0.50, 0.005, 0.08))
         # Half the $50 notional released → $25 remains reserved.
         assert copier.risk.market_exposure("mkt-p") == pytest.approx(25.0)
         assert copier.risk.trader_exposure("0xwhale") == pytest.approx(25.0)
@@ -716,21 +714,21 @@ class TestFillReconciliation:
         partial-fill path.  Before the math.isclose fix, `100.0 - 1e-10 < 100.0`
         was True, releasing a fractional amount of exposure and corrupting cap
         accounting for an effectively-full fill.
-        Event: $100 source size → copy = $50 → 100 shares @ 0.50.
-        Venue reports 100.0 − 1e-10 (fee-rounding float drift)."""
+        Event: $100 source size gives a $50 all-in copy budget.
+        Venue reports intended shares minus 1e-10 (fee-rounding float drift)."""
         copier.clob.place_order = AsyncMock(
             return_value={
                 "status": "LIVE",
-                "filled_size": 100.0 - 1e-10,
+                "filled_size": 50.0 / gross_buy_fill_price(0.50, 0.005, 0.08) - 1e-10,
                 "avg_price": 0.50,
             }
         )
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, market="mkt-fp"))
         positions = await copier.portfolio.get_open_positions()
         assert len(positions) == 1
-        # size_shares stays at the intended 100.0 — no partial-fill adjustment.
-        assert positions[0].size_shares == pytest.approx(100.0, rel=1e-6)
-        # Full notional remains reserved: 0.50 * 100 = $50.
+        # The intended share count remains unchanged.
+        assert positions[0].size_shares == pytest.approx(50.0 / gross_buy_fill_price(0.50, 0.005, 0.08), rel=1e-6)
+        # The full $50 budget remains reserved.
         assert copier.risk.market_exposure("mkt-fp") == pytest.approx(50.0, rel=1e-6)
 
     def test_reconcile_fill_near_full_returns_reported_value(self):
@@ -776,9 +774,8 @@ class TestKellyTrackerPrior:
         assert len(open_pos) == 1
         # edge = roi_to_edge(0.40, 0.50) = 0.20; decay≈1 (just updated).
         # edge_to_win_prob: 0.20*0.5=0.10 (≤max_edge) → p = 0.50+0.10 = 0.60.
-        # f* = 0.60 - 0.40*0.50/0.50 = 0.20; raw = 10k*0.20*0.25 = $500, cap $200 → 400 shares.
-        # Flat sizing would give 100 shares — confirms the edge path was used.
-        assert open_pos[0].size_shares == pytest.approx(400.0)
+        # f* = 0.20; raw sizing is $500 and the all-in budget caps it at $200.
+        assert open_pos[0].entry_price * open_pos[0].size_shares == pytest.approx(200.0)
 
     @pytest.mark.asyncio
     async def test_flat_fallback_when_seeding_disabled(self, copier):
@@ -791,8 +788,8 @@ class TestKellyTrackerPrior:
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
         assert len(open_pos) == 1
-        # Flat: 0.5 * $100 = $50 → 100 shares @ 0.50.
-        assert open_pos[0].size_shares == pytest.approx(100.0)
+        # Flat sizing uses a $50 all-in budget.
+        assert open_pos[0].entry_price * open_pos[0].size_shares == pytest.approx(50.0)
 
     @pytest.mark.asyncio
     async def test_flat_fallback_when_wallet_not_in_tracker(self, copier):
@@ -806,7 +803,7 @@ class TestKellyTrackerPrior:
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
         assert len(open_pos) == 1
-        assert open_pos[0].size_shares == pytest.approx(100.0)
+        assert open_pos[0].entry_price * open_pos[0].size_shares == pytest.approx(50.0)
 
     @pytest.mark.asyncio
     async def test_favorite_buyer_not_oversized(self, copier):
@@ -839,15 +836,13 @@ class TestKellyTrackerPrior:
 
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
-        # Fresh, this prior caps at 400 shares (see test above); decayed it is a
-        # tiny fraction of that — proving the prior was down-weighted by age.
+        # The decayed prior produces a tiny position, proving it was down-weighted.
         assert len(open_pos) == 1
         assert open_pos[0].size_shares < 10.0
 
     @pytest.mark.asyncio
     async def test_decay_disabled_keeps_full_prior(self, copier):
-        """M4 kill-switch: tracker_prior_decay_enabled=False → no age down-weight,
-        so even a stale prior sizes at full strength (caps at 400 shares here)."""
+        """M4 kill-switch: disabling decay keeps the stale prior at the full $200 budget."""
         copier.config.copy_trading.kelly_enabled = True
         copier.config.copy_trading.kelly_min_trades = 20
         copier.config.copy_trading.kelly_seed_from_tracker = True
@@ -861,7 +856,7 @@ class TestKellyTrackerPrior:
         await copier.handle_trade_event(buy_event(price=0.50, size=100.0, token="tok-a"))
         open_pos = await copier.portfolio.get_open_positions()
         assert len(open_pos) == 1
-        assert open_pos[0].size_shares == pytest.approx(400.0)
+        assert open_pos[0].entry_price * open_pos[0].size_shares == pytest.approx(200.0)
 
     @pytest.mark.asyncio
     async def test_own_sample_takes_over_once_sufficient(self, copier):
