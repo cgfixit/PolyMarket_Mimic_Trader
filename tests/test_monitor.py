@@ -179,7 +179,12 @@ class TestTradeMonitor:
             on_price=on_price,
         )
         monitor.subscribe_token("tok-a")
-        raw = json.dumps([{"event_type": "price_change", "asset_id": "tok-a", "price": "0.55"}])
+        raw = json.dumps(
+            {
+                "event_type": "price_change",
+                "price_changes": [{"asset_id": "tok-a", "price": "0.55"}],
+            }
+        )
         await monitor._handle_ws_message(raw)
         assert len(ticks) == 1
         assert isinstance(ticks[0], PriceTick)
