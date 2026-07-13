@@ -504,8 +504,6 @@ class CopyTrader:
             )
             return
 
-        size_shares = copy_size_usdc / max(current_price, 1e-6)
-
         resolve_ts = None
         if market and market.resolve_time:
             resolve_ts = market.resolve_time.timestamp()
@@ -539,7 +537,12 @@ class CopyTrader:
                 # Favorable move? Recompute against the IMPROVED price so we don't buy
                 # less edge than the current book actually offers.
                 current_price = current_price2
-                size_shares = copy_size_usdc / max(current_price, 1e-6)
+
+        # Treat copy_size_usdc as an all-in ceiling. Sizing shares at the quote
+        # would spend above the cap once BUY slippage and taker fees are applied.
+        expected_entry = self._expected_entry_fill_price(current_price, copy_size_usdc, fee_rate)
+        size_shares = copy_size_usdc / max(expected_entry, 1e-6)
+        order_size_usdc = current_price * size_shares
 
         pos = None
         # 7. Position caps + exposure reservation (critical section).
@@ -563,7 +566,7 @@ class CopyTrader:
                     position_id=uuid.uuid4().hex,
                     market_id=event.market_id,
                     token_id=event.token_id,
-                    entry_price=current_price,
+                    entry_price=expected_entry,
                     size_shares=size_shares,
                     trader_address=event.wallet_address,
                     resolve_time=resolve_ts,
@@ -599,7 +602,7 @@ class CopyTrader:
             token_id=event.token_id,
             side="BUY",
             price=current_price,
-            size_usdc=copy_size_usdc,
+            size_usdc=order_size_usdc,
             # C2/M5: FOK ensures entries fill immediately in full or cancel.
             order_type=ct.entry_order_type,
             # Carry the rate the edge gate above just approved this trade
@@ -637,10 +640,10 @@ class CopyTrader:
             #      strand the unfilled exposure that build_position() reserved.
             filled_shares, avg_fill_price = self._reconcile_fill(order_result, size_shares, current_price)
 
-            # Exposure accounting basis: build_position() registered
-            # `entry_price * size_shares` at the PRE-fill current_price. Reconcile
-            # against THAT notional so release + remaining == registered exactly.
-            registered_notional = pos.entry_price * pos.size_shares  # == current_price * size_shares
+            # Exposure accounting basis: build_position() registered the full
+            # all-in budget at the conservative expected entry price. Reconcile
+            # against that notional so release + remaining == registered exactly.
+            registered_notional = pos.entry_price * pos.size_shares
 
             if filled_shares <= 0.0:
                 self._remove_pos_from_cache(pos)

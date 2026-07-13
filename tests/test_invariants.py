@@ -802,15 +802,22 @@ class TestEntryRollbackInvariants:
         assert paper_copier._pending_entries == 0
 
     async def test_partial_fill_releases_the_unfilled_fraction_of_registered_notional(self, paper_copier):
-        # copy size $50 @ 0.50 → 100 shares intended; venue fills 40
+        intended_shares = 50.0 / gross_buy_fill_price(0.50, 0.005, 0.08)
+        filled_shares = intended_shares * 0.4
         paper_copier.clob.place_order_with_timeout = AsyncMock(
-            return_value={"status": "LIVE", "order_id": "o", "filled_size": 40.0, "avg_price": 0.50, "raw": {}}
+            return_value={
+                "status": "LIVE",
+                "order_id": "o",
+                "filled_size": filled_shares,
+                "avg_price": 0.50,
+                "raw": {},
+            }
         )
         await paper_copier.handle_trade_event(_buy_event())
         positions = await paper_copier.portfolio.get_open_positions()
         assert len(positions) == 1
-        assert positions[0].size_shares == pytest.approx(40.0)
-        # released 60% of the REGISTERED notional (0.50 × 100 × 0.6 = $30)
+        assert positions[0].size_shares == pytest.approx(filled_shares)
+        # A 40% fill keeps 40% of the registered $50 all-in budget.
         assert paper_copier.risk.market_exposure("mkt-a") == pytest.approx(20.0)
         assert paper_copier._pending_entries == 0
 
