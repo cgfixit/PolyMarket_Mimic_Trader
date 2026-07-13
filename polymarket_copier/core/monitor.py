@@ -435,15 +435,24 @@ class TradeMonitor:
             events = [events]
 
         for event in events:
+            if not isinstance(event, dict):
+                continue
             event_type = event.get("event_type", "")
-            asset_id = event.get("asset_id", "")
-
-            if asset_id not in self._subscribed_tokens:
+            if event_type not in ("price_change", "last_trade_price"):
                 continue
 
-            if event_type in ("price_change", "last_trade_price"):
+            price_updates = event.get("price_changes", [event]) if event_type == "price_change" else [event]
+            if not isinstance(price_updates, list):
+                continue
+
+            for update in price_updates:
+                if not isinstance(update, dict):
+                    continue
+                asset_id = update.get("asset_id", "")
+                if asset_id not in self._subscribed_tokens:
+                    continue
                 try:
-                    price = float(event.get("price", 0))
+                    price = float(update.get("price", 0))
                 except (TypeError, ValueError):
                     continue
 
@@ -451,9 +460,8 @@ class TradeMonitor:
                     logger.debug("WS price out of range [0,1]: %.6f (ignoring)", price)
                     continue
 
-                tick = PriceTick(token_id=asset_id, price=price)
                 if self._on_price:
-                    await self._on_price(tick)
+                    await self._on_price(PriceTick(token_id=asset_id, price=price))
 
     # ── REST Polling Loop ─────────────────────────────────────────────────────
 
