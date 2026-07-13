@@ -4,7 +4,7 @@ description: >-
   Live-money-readiness optimizer for PolyMarket_Mimic_Trader. Use when asked
   to review profitability docs, improve non-paper mode, verify wallet/API
   correctness, or harden the code for real-money paths without weakening safety
-  rules.
+  rules. Read-only for findings; edits and PRs require an explicit execution request.
 ---
 
 # Optimize Money Mode
@@ -15,6 +15,20 @@ This skill is intentionally skeptical. It can optimize for live-money
 readiness. It cannot honestly certify that the bot is legal or "likely to make
 money consistently" without fresh external evidence, venue-specific legal
 review, and measured execution data. Do not blur that line.
+
+## Current Build Boundary
+
+Before live-mode work, inspect `polymarket_copier/main.py::run_bot` at the
+target revision. Current `main` rejects `config.mode == "live"` because its
+Polymarket CLOB V1 order path is unsupported. Treat that as an intentional hard
+stop:
+
+- Do not run `--mode live`, remove or bypass the gate, or use real-wallet
+  credentials as a test.
+- Limit this workflow to paper-mode evidence and readiness or audit changes
+  unless the user explicitly authorizes a separate live-mode design review.
+- If the gate changes, re-read the code and update this skill in the same PR;
+  do not assume this boundary still holds.
 
 ## Read First
 
@@ -104,7 +118,10 @@ Without that, phrase it as risk reduction or readiness improvement, not alpha.
 
 When the user asks you to execute this workflow:
 
-1. Start from fresh `origin/main`.
+1. Start from fresh `origin/main`: require `git status --porcelain` to print
+   nothing, run `git fetch origin main`, then run
+   `git switch -c codex/polymarket-money-mode-<topic> origin/main`. If the
+   branch exists, switch to it without resetting it.
 2. Read the repo docs above.
 3. Verify the current Polymarket docs and legal baseline above.
 4. Produce findings and choose one high-leverage chunk.

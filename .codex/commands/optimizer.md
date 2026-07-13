@@ -6,7 +6,7 @@ PolyMarket_Mimic_Trader optimizer workflow.
 When the user asks to optimize, harden, audit, or open focused improvement PRs:
 
 - inspect only for read-back or review requests
-- run `bash .codex/skills/optimizer/bootstrap.sh [branch-name]` when execution is requested
+- for execution, require a clean tree, run `git fetch origin main`, and create a `codex/polymarket-optimize-<topic>` branch from `origin/main`; switch to an existing branch without resetting it
 - scan CI, tests, `polymarket_copier/`, config, and API or SQLite choke points
 - deduplicate against open PRs before choosing focus areas
 - group work into small draft-PR chunks instead of one broad rewrite

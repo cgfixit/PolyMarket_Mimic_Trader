@@ -30,7 +30,7 @@ Validation commands:
 - `ruff check .` and `ruff format --check .` (both are CI gates; `scripts/check-lint.ps1` is a Windows PowerShell wrapper around the same two commands)
 - `mypy polymarket_copier --ignore-missing-imports --no-strict-optional` (exact CI flags)
 - `python -m polymarket_copier.main --mode paper --config config.yaml`
-- Or run everything at once: `bash .claude/skills/preflight/preflight.sh`
+- On POSIX hosts with Bash available, the all-in-one preflight is `bash .claude/skills/preflight/preflight.sh`. On Windows, run the individual CI gates above; `powershell -File scripts/check-lint.ps1` covers both Ruff gates.
 
 Repo facts:
 
