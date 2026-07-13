@@ -551,7 +551,8 @@ class TestTrackerAccessors:
 
 class TestTrackerActivityFetch:
     @pytest.mark.asyncio
-    async def test_fetch_activity_uses_trade_filter_and_sort(self):
+    async def test_fetch_activity_includes_realizations_and_sort(self):
+        """Resolution rows must reach the scorer with their matching BUYs."""
         client = TrackerClient(config=TrackerConfig(activity_fetch_limit=25), data_api="https://data.example")
         session = _FakeActivitySession([{"id": "t1"}])
 
@@ -564,7 +565,7 @@ class TestTrackerActivityFetch:
                 {
                     "user": "0xabc",
                     "limit": 25,
-                    "type": "TRADE",
+                    "type": "TRADE,REDEEM,REWARD",
                     "sortBy": "TIMESTAMP",
                     "sortDirection": "DESC",
                 },
