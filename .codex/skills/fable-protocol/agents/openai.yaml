@@ -1,0 +1,7 @@
+interface:
+  display_name: "Fable Protocol"
+  short_description: "Reasoning discipline for high-stakes technical work"
+  default_prompt: "Use $fable-protocol to handle this substantive technical task with calibrated verification, premise-testing, and security discipline."
+
+policy:
+  allow_implicit_invocation: true

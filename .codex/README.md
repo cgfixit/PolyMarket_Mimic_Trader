@@ -41,6 +41,7 @@ Notes:
 - `.codex/skills/optimize-money-mode/SKILL.md` is the live-money-readiness optimizer for real-wallet paths, profitability docs, and legal gating.
 - `.codex/skills/research-polymarket-api/SKILL.md` is the current-docs/current-law fact-check workflow for non-paper mode assumptions.
 - `.codex/skills/add-enhance-tests/SKILL.md` is the realistic-tests workflow for CI-safe unit/integration coverage upgrades.
+- `.codex/skills/fable-protocol/SKILL.md` is the evidence-first reasoning and security-discipline layer for substantive technical work.
 - `.codex/commands/optimize-money-mode.md`, `research-polymarket-api.md`, and `add-enhance-tests.md` are the repo-local wrappers for those skills.
 
 Codex optimization bias:
