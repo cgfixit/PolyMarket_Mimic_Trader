@@ -108,7 +108,7 @@ class TrackerConfig:
     sharpe_shrink_min_trades: int = 20  # H14: shrink Sharpe below this sample size
 
     # Data fetch limits
-    activity_fetch_limit: int = 500  # Trades to pull per trader for stats
+    activity_fetch_limit: int = 500  # Activity rows to pull per trader for stats
     leaderboard_limit: int = 50  # Candidates to fetch from leaderboard
     recent_window_days: int = 30  # H15: trailing window for dual-window filtering
 
@@ -553,14 +553,16 @@ class TrackerClient:
         address: str,
     ) -> List[dict]:
         """
-        Fetch recent trade activity for a wallet.
-        API: GET /activity?user={address}&limit=N&type=TRADE
+        Fetch recent trade and realization activity for a wallet.
+        API: GET /activity?user={address}&limit=N&type=TRADE,REDEEM,REWARD
         """
         url = f"{self._data_api}/activity"
         params: Dict[str, Any] = {
             "user": address,
             "limit": self.cfg.activity_fetch_limit,
-            "type": "TRADE",
+            # Include resolution payouts so the existing redemption-aware
+            # scorer can close buy-and-hold positions.
+            "type": "TRADE,REDEEM,REWARD",
             "sortBy": "TIMESTAMP",
             "sortDirection": "DESC",
         }
