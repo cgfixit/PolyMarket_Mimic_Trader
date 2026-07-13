@@ -359,11 +359,11 @@ class TradeMonitor:
             self._ws_healthy = True
             logger.info("WebSocket connected: %s", self._ws_url)
 
+            # The subscription snapshot is per socket, so reconnects must resync it.
+            self._last_subscribed = set()
+            await self._maybe_update_subscription(ws)
             heartbeat = asyncio.create_task(self._ws_heartbeat(ws))
             try:
-                if self._subscribed_tokens:
-                    await self._ws_send_subscription(ws, list(self._subscribed_tokens))
-
                 async for raw_msg in ws:
                     if self._stop_event.is_set():
                         break
