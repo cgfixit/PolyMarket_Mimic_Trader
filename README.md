@@ -10,10 +10,12 @@ Only ~7.6% of Polymarket wallets are profitable, and academic research (Gómez-C
 
 ## Real-Money Status
 
-Paper mode is the supported default. Current `origin/main` fixes several real-money blockers (current API shapes, price-shaped taker fees, CLOB fee metadata, geoblock preflight, documented WebSocket heartbeat, and `usdcSize` activity parsing), but it still does **not** prove profitability outside paper mode.
+Paper mode is the only supported runtime mode. `polymarket_copier.main::run_bot` fails closed for `--mode live` because this build uses unsupported Polymarket CLOB V1 orders. Do not fund a wallet or configure live credentials for this build.
+
+The remaining readiness discussion describes prerequisites for a future, separately reviewed live client; it is not a path to enable the current build. It still does **not** prove profitability outside paper mode.
 Official Polymarket docs currently recommend `py-clob-client-v2` and the deposit-wallet `signature_type=3` flow for new API users; this repo's live client still uses `py-clob-client>=0.34,<1.0`, so current-doc auth parity is not complete.
 
-Do not fund live mode until you have a venue-specific legal review, a held-out backtest with positive net expectancy after spread/slippage/fees/latency/no-fills, realistic paper/live execution reports from order-book snapshots, and a minimal-fund proof of the exact SDK/auth path. US/Georgia operators should treat the international CLOB endpoint as a venue mismatch, not a config problem.
+Any future live client requires a venue-specific legal review, a held-out backtest with positive net expectancy after spread/slippage/fees/latency/no-fills, realistic paper/live execution reports from order-book snapshots, and a minimal-fund proof of the exact SDK/auth path. US/Georgia operators should treat the international CLOB endpoint as a venue mismatch, not a config problem.
 
 ## How It Works
 
@@ -101,8 +103,8 @@ polymarket_copier/
 
 ### Prerequisites
 
-- Python 3.10+ (tested on 3.10, 3.11, 3.12)
-- A Polygon wallet with USDC (for live trading only)
+- Python 3.10+ (CI runs 3.11 and 3.12)
+- No wallet or private key is required for supported paper mode
 
 ### Installation
 
@@ -118,7 +120,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+For paper mode, no private key or API credentials are needed. Keep any future credentials in an untracked `.env`; never commit them:
 
 ```env
 POLY_PRIVATE_KEY=       # Your Polygon wallet private key (live mode only)
@@ -165,21 +167,10 @@ All trading parameters are in `config.yaml`. The defaults are conservative:
 python -m polymarket_copier.main --mode paper
 ```
 
-**Live mode** (requires `POLY_PRIVATE_KEY` in `.env`; not a profitability or legal-readiness signal):
-
-```bash
-python -m polymarket_copier.main --mode live
-```
-
-Live mode must additionally pass two fail-closed startup gates (`config.yaml`):
-
-1. **Geoblock preflight** — queries Polymarket's eligibility endpoint and refuses to
-   start if the jurisdiction is blocked *or eligibility can't be confirmed*.
-2. **Forward-paper gate** (`forward_paper_gate_enabled`, default on) — refuses to
-   start until the local database holds >= `forward_paper_min_trades` (default 50)
-   closed **paper** trades with positive net PnL. Only positions explicitly opened
-   under paper mode count; necessary, not sufficient — paper fills remain a
-   simulation, not proof of live edge.
+**Live mode is intentionally disabled.** `python -m polymarket_copier.main --mode live`
+raises `ConfigError` before creating an order session. Do not bypass that boundary;
+any future live-client work requires separate review of the SDK, auth, venue, legal,
+and execution-readiness assumptions above.
 
 ## Risk Controls
 
@@ -298,7 +289,7 @@ Structured JSON log events are emitted on the `data` logger channel for downstre
 
 ## Disclaimer
 
-This software is provided for educational and research purposes. Trading on prediction markets carries financial risk. Past performance of copied traders does not guarantee future results. Always start with paper mode and a small bankroll. The authors are not responsible for any financial losses incurred through use of this software.
+This software is provided for educational and research purposes. Trading on prediction markets carries financial risk. Past performance of copied traders does not guarantee future results. Use paper mode with this build. The authors are not responsible for any financial losses incurred through use of this software.
 
 ## License
 
