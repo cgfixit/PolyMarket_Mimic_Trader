@@ -752,6 +752,17 @@ class TestSetWallets:
         assert "0xold" in monitor._primed_wallets  # existing priming retained
 
     @pytest.mark.asyncio
+    async def test_set_wallets_readded_wallet_is_unprimed(self):
+        """A removed wallet must seed a fresh baseline when it returns."""
+        monitor = TradeMonitor(tracked_wallets=["0xold"], on_trade=_noop_trade)
+        monitor._primed_wallets.add("0xold")
+
+        await monitor.set_wallets(["0xnew"])
+        await monitor.set_wallets(["0xold"])
+
+        assert "0xold" not in monitor._primed_wallets
+
+    @pytest.mark.asyncio
     async def test_set_wallets_preserves_seen_ids_for_retained_wallet(self):
         monitor = TradeMonitor(tracked_wallets=["0xold"], on_trade=_noop_trade)
         from collections import OrderedDict

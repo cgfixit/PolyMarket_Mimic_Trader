@@ -138,8 +138,8 @@ Full detail with reproduction output: `docs/DUE_DILIGENCE_AUDIT_2026-07-08.md`.
   venue response lacks fill fields.
 - **DD-11** close-plus-tax-lot atomicity holds only by convention (shared connection,
   interleavable commits).
-- **DD-12** Wallets re-added after removal skip cold-start priming (stale seen-set replay,
-  gated only by the staleness window).
+- ~~**DD-12**~~ **FIXED** — `set_wallets()` clears priming for removed wallets, so a re-add
+  seeds a fresh baseline. Pinned by `test_set_wallets_readded_wallet_is_unprimed`.
 - **DD-14** Daily-loss "halt" actually liquidates all open positions (pinned as current
   behavior by `test_daily_loss_breach_flags_every_open_position_for_exit`; docs disagree).
 - **DD-23** The tracker's `type=TRADE` activity fetch (commit `a024771`) can no longer
