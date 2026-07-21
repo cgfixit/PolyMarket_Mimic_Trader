@@ -750,9 +750,15 @@ def _parse_timestamp(raw) -> float:
     """
     if isinstance(raw, str):
         try:
-            from datetime import datetime
+            from datetime import datetime, timezone
 
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            # Offset-less ISO strings are venue UTC, not host-local time — a naive
+            # datetime makes .timestamp() interpret them in the server timezone
+            # (see monitor._parse_trade_event, same fix).
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
         except ValueError:
             return 0.0
     elif isinstance(raw, (int, float)):
