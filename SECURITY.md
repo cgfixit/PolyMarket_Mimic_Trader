@@ -45,7 +45,7 @@ The following are **out of scope**:
 This project follows these security practices:
 
 1. **No hardcoded secrets** — All credentials are loaded from environment variables via `.env` (never committed)
-2. **Paper mode by default** — `config.yaml` ships with `mode: paper`; live trading requires explicit `--mode live` CLI flag *and* a configured `POLY_PRIVATE_KEY`
+2. **Paper-only runtime** — `config.yaml` ships with `mode: paper`; `run_bot()` refuses `--mode live` before creating an order session because this build uses the unsupported CLOB V1 client. Configuring credentials does not enable live trading.
 3. **Asymmetric order retry matrix** — Entry FOK/FAK orders are never retried; resting GTC/GTD entries may retry once only after cancel-confirm of the confirmed-unfilled remainder; exit orders may retry up to 3 times. See `CLAUDE.md` for the full matrix.
 4. **Parameterized SQL** — All SQLite queries in `portfolio.py` use parameterized statements (`?` placeholders), not string interpolation
 5. **Input validation** — All prices are validated against `[0.0, 1.0]` range via `_assert_valid_price()`; the `Order` model enforces `price=Field(ge=0, le=1)` and `size_usdc=Field(gt=0)` at the Pydantic layer
