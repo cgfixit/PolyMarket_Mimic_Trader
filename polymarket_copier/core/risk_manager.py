@@ -21,15 +21,15 @@ to the token's natural ceiling (1.0) or floor (0.0):
 
     Both results are clamped to [0.0, 1.0].
 
-EXAMPLES (defaults: tp_fraction=0.40, sl_fraction=0.25)
---------------------------------------------------------
-  Entry  │  TP     │  SL     │  Risk:Reward (remaining range)
+EXAMPLES (defaults: tp_fraction=0.40, sl_fraction=0.25, min_reward_risk=1.0)
+----------------------------------------------------------------------------
+  Entry  │  TP     │  SL     │  Reward:Risk (TP dist / SL dist)
   ────────┼─────────┼─────────┼──────────────────────────────────
-  $0.20  │  $0.52  │  $0.15  │  4.4:1 (TP captures 40% of $0.80 upside)
-  $0.50  │  $0.70  │  $0.375 │  2.2:1 (TP captures 40% of $0.50 upside)
-  $0.82  │  $0.892 │  $0.615 │  1.7:1 (TP captures 40% of $0.18 upside)
-  $0.97  │  $1.00* │  $0.727 │  *clamped to token ceiling
-  $0.02  │  $0.412 │  $0.00* │  *floored to token floor
+  $0.20  │  $0.52  │  $0.15  │  6.4:1 (TP captures 40% of $0.80 upside)
+  $0.50  │  $0.70  │  $0.375 │  1.6:1 (TP captures 40% of $0.50 upside)
+  $0.82  │  $0.892 │  $0.748 │  1.0:1 (H2 caps SL distance to TP distance)
+  $0.97  │  $1.00* │  $0.940 │  *TP clamped to token ceiling; H2 caps SL
+  $0.02  │  $0.280 │  $0.00* │  L5 tapers the TP fraction; *SL floored
 """
 
 from __future__ import annotations
