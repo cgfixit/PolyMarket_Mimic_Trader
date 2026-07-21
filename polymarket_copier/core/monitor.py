@@ -225,7 +225,7 @@ class TradeMonitor:
         self._last_subscribed: Set[str] = set()
         # Raised whenever subscribe_token/unsubscribe_token changes the desired set.
         # _ws_heartbeat waits on this and pushes an immediate update instead of
-        # waiting for incoming WS traffic.
+        # waiting for inbound traffic.
         self._subscription_update_requested = asyncio.Event()
 
         # Whether the WS is currently connected and healthy
@@ -641,9 +641,15 @@ def _parse_trade_event(wallet: str, raw: dict) -> Optional[TradeEvent]:
 
         ts_raw = raw.get("timestamp", raw.get("createdAt", ""))
         if isinstance(ts_raw, str):
-            from datetime import datetime
+            from datetime import datetime, timezone
 
-            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
+            parsed = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            # An offset-less ISO string is venue UTC, not host-local time: a naive
+            # datetime makes .timestamp() interpret it in the server's timezone,
+            # skewing wall_age by the UTC offset and falsely tripping the stale gate.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            ts = parsed.timestamp()
         elif isinstance(ts_raw, (int, float)):
             ts = ts_raw / 1_000.0 if ts_raw > 1e12 else float(ts_raw)
         else:
