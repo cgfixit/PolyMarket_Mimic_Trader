@@ -18,6 +18,26 @@ failure mode, **S3** = doc rot that will cause a wrong operational decision.
 
 ---
 
+## Current status recheck (2026-07-20)
+
+The detailed sections below preserve the original audit evidence. Rechecking current
+`origin/main` at `c4c6e1b` shows that six findings were fixed after the audit:
+
+| Finding | Current status | Repo evidence |
+|---|---|---|
+| DD-01 | Fixed (`2a383b1`) | `config.py::AppConfig.mode`; `tests/test_config.py::TestModeValidation` |
+| DD-06 | Fixed (`f6fb2a0`) | `copier.py::_remove_pos_from_cache` matches `position_id` |
+| DD-07 | Fixed (`5c13152`) | `monitor.py::run`; `test_run_propagates_poll_loop_exception` |
+| DD-08 | Fixed (`5c13152`) | `monitor.py::_subscription_update_requested`; `test_ws_heartbeat_pushes_subscription_update` |
+| DD-12 | Fixed (`d516586`) | `monitor.py::set_wallets`; `test_set_wallets_readded_wallet_is_unprimed` |
+| DD-23 | Fixed (`99c4ae1`) | `tracker.py::_fetch_activity`; `test_fetch_activity_includes_realizations_and_sort` |
+
+DD-03 through DD-05, DD-09 through DD-11, and DD-14 remain open at this snapshot.
+DD-09 is narrower than the original finding: `_demoted_traders` now filters Kelly priors,
+but tracker rebalance still re-adds the wallet to `TradeMonitor`, so flat-size copies can resume.
+
+---
+
 ## S1 — Safety-property divergences
 
 ### DD-01. A `mode` typo routes orders down the LIVE path while every live safety gate stays off
@@ -391,26 +411,23 @@ class as CLAUDE.md's unwired-field warning, but triggered by the README itself.
 
 | # | Severity | One-line |
 |---|----------|----------|
-| DD-01 | S1 | `mode` typo → live order path with all live gates off |
+| DD-01 | ~~S1~~ | **FIXED (`2a383b1`)** — mode is validated and case-normalized |
 | DD-02 | ~~S1~~ | **FIXED upstream (`b666acf`)** — `--mode live` now revalidates key+funder |
 | DD-03 | S1 | Exposure released at fill price, not registered notional — books drift |
 | DD-04 | S1 | `min_reward_risk` floor violated above entry ≈0.97 |
 | DD-05 | S1 | Missing WS `price` field → 0.0 tick → SL cascade |
-| DD-06 | S1 | Phantom cached position re-sends SELLs; equality-based eviction fails |
-| DD-07 | S2 | Monitor crash swallowed; supervise() restart inert |
-| DD-08 | S2 | WS subscriptions depend on PONG traffic arriving as messages |
-| DD-09 | S2 | Demotion undone by rebalance; `_demoted_traders` never read |
+| DD-06 | ~~S1~~ | **FIXED (`f6fb2a0`)** — cache eviction uses stable `position_id` |
+| DD-07 | ~~S2~~ | **FIXED (`5c13152`)** — monitor child failures propagate |
+| DD-08 | ~~S2~~ | **FIXED (`5c13152`)** — subscription updates wake the heartbeat task |
+| DD-09 | S2 | Demotion undone by rebalance; the set filters Kelly priors but not flat-size copies |
 | DD-10 | S2 | Live reconcile degrades to assume-full-fill at quote (get_order calls now bounded — `a0a0505` — but the FOK/FAK fallback itself is unchanged) |
 | DD-11 | S2 | Tax-lot atomicity by convention only (shared-connection commits) |
-| DD-12 | S2 | Re-added wallets skip cold-start priming |
+| DD-12 | ~~S2~~ | **FIXED (`d516586`)** — re-added wallets seed a fresh baseline |
 | DD-14 | S2 | "Halt" on daily loss is actually full liquidation |
 | DD-15–22 | S3 | Doc rot: scoring formula, TP/SL tables, trailing formula, Kelly story, fee-aware sizing, metric names, `kelly_fraction`, misc |
-| DD-23 | S2 | `type=TRADE` fetch filter (`a024771`) makes the tracker's documented redemption-awareness dead code; hold-to-resolution wins now silently dropped |
+| DD-23 | ~~S2~~ | **FIXED (`99c4ae1`)** — tracker fetch includes `TRADE,REDEEM,REWARD` |
 
-**Dispositions.** Everything above (excluding the now-fixed DD-02 and DD-13) is *reported, not fixed*:
-per CLAUDE.md's escalation ladder, DD-01, DD-03…DD-06, and DD-10…DD-14 touch trading math,
-order flow, or live-mode gating (Tier 2/3 — ask first). What this PR does ship:
-`tests/test_invariants.py` pins every invariant that currently holds (so a weaker model can't
-regress the parts that work, including a regression pin for the DD-02 fix), `INVARIANTS.md`
-makes the contract explicit for future sessions, and the one doc-truth fix this PR is allowed
-to make (CLAUDE.md logger claim) is applied.
+**Dispositions.** The original audit shipped documentation and invariant pins, not runtime
+fixes. Later commits fixed DD-01, DD-02, DD-06 through DD-08, DD-12, DD-13, and DD-23. The
+remaining runtime findings are still report-only here; per CLAUDE.md's escalation ladder,
+DD-03 through DD-05, DD-09 through DD-11, and DD-14 require separate review before code changes.

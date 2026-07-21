@@ -108,12 +108,13 @@ Unless stated otherwise, "test" means `tests/test_invariants.py::<name>`.
 
 ---
 
-## Known divergences — report anchors, do NOT fix unprompted (Tier 2+)
+## Known divergences — open items remain Tier 2+
 
 Full detail with reproduction output: `docs/DUE_DILIGENCE_AUDIT_2026-07-08.md`.
+Fixed entries remain below as historical anchors; do not reopen them without a new failing reproduction.
 
-- **DD-01** `mode` typo (e.g. `PAPER`) → live order path with the key check and geoblock both
-  skipped (`clob_client.py` checks `== "paper"`, every gate checks `== "live"`).
+- ~~**DD-01**~~ **FIXED** (commit `2a383b1`) — `AppConfig.mode` is a validated literal and
+  `load_config()` normalizes case before validation. Pinned by `TestModeValidation`.
 - ~~**DD-02**~~ **FIXED** (commit `b666acf`) — `--mode live` now calls
   `config.py::validate_live_config()` again after the CLI override applies, so the
   private-key and `signature_type=3`/funder checks both fire regardless of whether `"live"`
@@ -126,26 +127,27 @@ Full detail with reproduction output: `docs/DUE_DILIGENCE_AUDIT_2026-07-08.md`.
   without fixing this.
 - **DD-05** WS message with a missing `price` field emits a 0.0 tick (would stop-loss every
   position on that token).
-- **DD-06** Poll-path exits evict the cache by dataclass equality; a debounced-peak mismatch
-  leaves a phantom position that re-sends SELLs.
-- **DD-07** `monitor.run()` gathers with `return_exceptions=True` → `supervise()` can never
-  restart a dead poll loop.
-- **DD-08** WS subscription updates are only sent when *some* message arrives (in practice,
-  the PONG replies) — held by server convention.
-- **DD-09** Trader demotion is undone by the next tracker rebalance; `_demoted_traders` is
-  written but never read.
+- ~~**DD-06**~~ **FIXED** (commit `f6fb2a0`) — cache eviction matches the stable
+  `position_id`, so a DB copy with a different debounced peak still removes the live cache row.
+- ~~**DD-07**~~ **FIXED** (commit `5c13152`) — `monitor.run()` propagates child failures.
+  Pinned by `test_run_propagates_poll_loop_exception`.
+- ~~**DD-08**~~ **FIXED** (commit `5c13152`) — subscription changes wake the heartbeat task
+  and are pushed without waiting for inbound traffic. Pinned by
+  `test_ws_heartbeat_pushes_subscription_update`.
+- **DD-09** Tracker rebalance re-adds demoted wallets to `TradeMonitor`; `_demoted_traders`
+  filters Kelly priors but does not gate flat-size copies.
 - **DD-10** Live fill reconciliation degrades to "assume full fill at quoted price" when the
   venue response lacks fill fields.
 - **DD-11** close-plus-tax-lot atomicity holds only by convention (shared connection,
   interleavable commits).
-- ~~**DD-12**~~ **FIXED** — `set_wallets()` clears priming for removed wallets, so a re-add
-  seeds a fresh baseline. Pinned by `test_set_wallets_readded_wallet_is_unprimed`.
+- ~~**DD-12**~~ **FIXED** (commit `d516586`) — `set_wallets()` clears priming for removed
+  wallets, so a re-add seeds a fresh baseline. Pinned by
+  `test_set_wallets_readded_wallet_is_unprimed`.
 - **DD-14** Daily-loss "halt" actually liquidates all open positions (pinned as current
   behavior by `test_daily_loss_breach_flags_every_open_position_for_exit`; docs disagree).
-- **DD-23** The tracker's `type=TRADE` activity fetch (commit `a024771`) can no longer
-  deliver the redeem/claim rows `_compute_trader_stats`'s `_REDEEM_TYPES` branch handles —
-  the documented "resolution awareness" is dead at runtime and hold-to-resolution wins are
-  silently dropped from trader stats.
+- ~~**DD-23**~~ **FIXED** (commit `99c4ae1`) — tracker activity requests
+  `TRADE,REDEEM,REWARD`, reconnecting resolution payouts to the scorer. Pinned by
+  `test_fetch_activity_includes_realizations_and_sort`.
 
 Doc-rot items (safe to fix as doc-truth PRs, one concern each): README scoring formula,
 TP/SL tables (README + `risk_manager.py` docstring), trailing-stop description, Kelly
