@@ -225,7 +225,7 @@ class TradeMonitor:
         self._last_subscribed: Set[str] = set()
         # Raised whenever subscribe_token/unsubscribe_token changes the desired set.
         # _ws_heartbeat waits on this and pushes an immediate update instead of
-        # waiting for inbound traffic.
+        # waiting for incoming WS traffic.
         self._subscription_update_requested = asyncio.Event()
 
         # Whether the WS is currently connected and healthy
