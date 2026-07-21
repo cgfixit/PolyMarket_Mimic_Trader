@@ -294,8 +294,10 @@ class TradeMonitor:
         async with self._wallet_lock:
             # Removed wallets must re-prime before they can emit trades again.
             self._primed_wallets.intersection_update(wallets)
-            for w in wallets:
-                self._seen_trade_ids.setdefault(w, OrderedDict())
+            # Evict seen-id state for wallets no longer tracked; retained wallets
+            # keep their dedup state (invariant). A re-added wallet is unprimed
+            # (above), so its first poll re-seeds a fresh baseline (DD-12).
+            self._seen_trade_ids = {w: self._seen_trade_ids.get(w, OrderedDict()) for w in wallets}
             self._wallets = wallets
 
     @property
