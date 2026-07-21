@@ -14,9 +14,10 @@ Unless stated otherwise, "test" means `tests/test_invariants.py::<name>`.
 
 1. If your change makes any test below fail, the change is wrong until proven otherwise —
    present the failure to the maintainer; do not weaken or delete the test to get green.
-2. The "Known divergences" section lists bugs that are *documented, not fixed*. Fixing any
-   of them touches trading math, order flow, or live gating → **Tier 2, ask first**
-   (CLAUDE.md escalation ladder). Never pin a known bug with a new test.
+2. Open entries in "Known divergences" are *documented, not fixed*. Fixing an open entry
+   touches trading math, order flow, or live gating → **Tier 2, ask first** (CLAUDE.md
+   escalation ladder). Fixed entries remain only as historical anchors. Never pin a known
+   bug with a new test.
 3. Adding a new invariant? Add the test in `tests/test_invariants.py`, named after the
    invariant, and add a row here in the same PR.
 
