@@ -127,15 +127,21 @@ class CopyTradingConfig(BaseModel):
     slippage_size_threshold_usdc: float = 500.0
     slippage_size_coeff: float = 0.5
     slippage_size_max_mult: float = 3.0
-    # H5: Expected round-trip cost (entry slip + taker fee + exit fee) used for
-    # the pre-copy edge check and the TP revalidation after fill reconciliation.
-    # Default matches paper mode (0.5% slip + 2% fee + 2% exit fee ≈ 4.5%).
+    # H5: RETIRED — no code reads this knob (audit DD-19). The pre-copy edge
+    # check and the post-fill TP revalidation use price-shaped taker fees from
+    # live fee data (see paper_taker_fee_rate and copier._fee_rate_for_market),
+    # not a flat round-trip percentage. Retained only so config.yaml files that
+    # set it keep loading; do not wire it into new logic. Deleting it is a
+    # config-schema change — ask the maintainer first.
     round_trip_fee_pct: float = 0.045
     # Edge-aware (fractional-Kelly) position sizing. OFF by default — opt-in, so
-    # enabling it is the only thing that changes copy-size behaviour. When on,
-    # sizing uses kelly_size_usdc() with the trader's observed win rate, but only
-    # once that trader has >= kelly_min_trades closed trades; otherwise the flat
-    # size_multiplier formula is used. The max_trade_pct cap always applies.
+    # enabling it is the only thing that changes copy-size behaviour. When on and
+    # the trader has >= kelly_min_trades closed trades, sizing uses
+    # kelly_size_usdc() with the trader's observed win rate. Below that sample,
+    # the tracker-seed path (kelly_seed_from_tracker, H18) sizes from the
+    # trader's demonstrated edge instead; only when that is also disabled does
+    # sizing fall back to the flat size_multiplier formula. The max_trade_pct cap
+    # always applies.
     kelly_enabled: bool = False
     kelly_fraction_multiplier: float = 0.25
     # M3: minimum closed-trade sample before trusting an observed edge for Kelly
