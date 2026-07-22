@@ -657,6 +657,81 @@ class TestTradingHalt:
         assert rm.is_trading_halted() is None
 
 
+class TestDrawdownStop:
+    """Guards the drawdown_stop_pct breaker (Profitability Analysis blocker #7:
+    the knob shipped in config.py/config.yaml but nothing read it). Entries must
+    halt when equity falls drawdown_stop_pct below its peak — including across
+    UTC-midnight resets that clear the daily breaker."""
+
+    def _rm(self, **overrides) -> RiskManager:
+        kwargs = dict(
+            drawdown_stop_pct=0.08,
+            daily_loss_limit_pct=1.0,  # keep the daily breaker out of the way
+            cooldown_after_losses=0,  # keep the loss-streak cooldown out of the way
+            max_market_exposure_pct=1.0,
+            max_trader_allocation=1.0,
+            max_total_exposure_pct=1.0,
+        )
+        kwargs.update(overrides)
+        return RiskManager(config=RiskConfig(**kwargs), bankroll=BANKROLL)
+
+    async def _lose(self, rm: RiskManager, pos_id: str, loss_usdc: float) -> None:
+        # entry 0.50 × 2000 shares = $1000 notional; exit price sets the loss.
+        pos = await rm.build_position(pos_id, "mkt_A", "t1", "0xA", entry_price=0.50, size_shares=2_000.0)
+        await rm.record_exit(pos, 0.50 - loss_usdc / 2_000.0)
+
+    async def test_halts_at_drawdown_from_realized_losses(self):
+        rm = self._rm()
+        await self._lose(rm, "p1", 850.0)  # -8.5% of the $10k peak
+        reason = rm.is_trading_halted()
+        assert reason is not None
+        assert "drawdown stop" in reason
+
+    async def test_no_halt_below_threshold(self):
+        rm = self._rm()
+        await self._lose(rm, "p1", 700.0)  # -7.0% < 8%
+        assert rm.is_trading_halted() is None
+
+    async def test_unrealized_pnl_counts_toward_drawdown(self):
+        rm = self._rm()
+        await self._lose(rm, "p1", 400.0)  # -4% realized
+        assert rm.is_trading_halted(unrealized_pnl=0.0) is None
+        reason = rm.is_trading_halted(unrealized_pnl=-450.0)  # combined -8.5%
+        assert reason is not None
+        assert "drawdown stop" in reason
+
+    async def test_peak_ratchets_up_after_wins(self):
+        """Drawdown is measured from the high-water mark, not starting bankroll:
+        a loss that leaves equity ABOVE the initial bankroll still halts if it is
+        >= 8% off the peak."""
+        rm = self._rm()
+        win = await rm.build_position("pw", "mkt_A", "tw", "0xA", entry_price=0.50, size_shares=4_000.0)
+        await rm.record_exit(win, 1.00)  # +$2000 → bankroll 12k, peak 12k
+        loss = await rm.build_position("pl", "mkt_A", "tl", "0xA", entry_price=0.50, size_shares=4_000.0)
+        await rm.record_exit(loss, 0.25)  # -$1000 → bankroll 11k, 8.33% off peak
+        assert rm.bankroll == pytest.approx(11_000.0)
+        reason = rm.is_trading_halted()
+        assert reason is not None
+        assert "drawdown stop" in reason
+
+    async def test_zero_disables_drawdown_stop(self):
+        rm = self._rm(drawdown_stop_pct=0.0)
+        await self._lose(rm, "p1", 2_000.0)  # -20%, far past the default 8%
+        assert rm.is_trading_halted() is None
+
+    async def test_survives_daily_window_reset(self):
+        """The daily breaker forgets losses at UTC midnight; the drawdown stop
+        must not. Simulate a rollover by forcing the daily window reset."""
+        rm = self._rm()
+        await self._lose(rm, "p1", 850.0)
+        rm._day_start_ts -= 86_400.0  # yesterday's window → next check resets it
+        rm._maybe_reset_daily_window()
+        assert rm.daily_pnl() == pytest.approx(0.0)
+        reason = rm.is_trading_halted()
+        assert reason is not None
+        assert "drawdown stop" in reason
+
+
 # ─── [N] Midnight UTC correctness ────────────────────────────────────────────
 
 

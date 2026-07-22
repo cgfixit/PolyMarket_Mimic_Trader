@@ -184,7 +184,7 @@ The bot enforces multiple layers of protection:
 6. **Daily loss circuit breaker** — halts all trading after 3% daily loss; resets at UTC midnight
 7. **Resolution blackout** — never enters markets resolving within 24h
 8. **Pre-trade depth check** — verifies ask-side liquidity before BUY orders (live mode)
-9. **Per-trader drawdown stop** — stops copying a trader after cumulative -8% session loss
+9. **Portfolio drawdown stop** — halts new entries when equity falls 8% below its peak (persists across the daily reset); trader demotion is a separate Wilson win-rate bound check
 10. **Cooldown** — pauses new entries after 3 consecutive losing trades
 11. **Staleness gate** — skips trades older than 12s at detection
 12. **Fail-closed gating** — skips a copy when market metadata or price can't be verified
@@ -285,7 +285,7 @@ Structured JSON log events are emitted on the `data` logger channel for downstre
 - `position_opened`, `position_closed` — entry/exit with price, size, PnL
 - `copy_skipped` — every skipped copy with a stable reason code
 - `circuit_breaker_tripped` — daily loss limit hit
-- `trader_demoted` — trader removed from pool after drawdown
+- `trader_demoted` — trader removed from pool when the Wilson upper bound on copy win-rate falls below the configured minimum
 
 ## Disclaimer
 
