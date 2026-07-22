@@ -135,6 +135,7 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
         time_exit_hours=config.risk_management.time_exit_hours,
         time_exit_min_range_move=config.risk_management.time_exit_min_range_move,
         daily_loss_limit_pct=config.risk_management.daily_loss_limit_pct,
+        drawdown_stop_pct=config.risk_management.drawdown_stop_pct,
         max_market_exposure_pct=config.risk_management.max_market_exposure_pct,
         max_trader_allocation=config.copy_trading.max_trader_allocation,
         cooldown_after_losses=config.risk_management.cooldown_after_losses,

@@ -45,7 +45,7 @@ Those fixes remove several stale implementation blockers. They do **not** prove 
 4. **The copied signal is delayed and public.** The bot copies after public activity appears. Skilled Polymarket traders appear to earn much of their edge by reacting first; a delayed copier may buy after the source trade has already moved the book.
 5. **Trader metrics remain biased.** Redemption and reward rows now reach the scorer, but worthless-expiry losses and unredeemed outcomes can still be absent. Historical ROI/win-rate inputs therefore remain incomplete even though the earlier resolution-fetch disconnect is fixed.
 6. **The live client is on an unsupported protocol.** Production trading moved to CLOB V2, while this repo still uses the legacy V1 package and order structures. Deposit-wallet configuration does not make that adapter compatible. A V2 migration and minimal-funds order-path proof are prerequisites, not optional hardening.
-7. **Breaker persistence is incomplete.** Daily PnL, consecutive-loss cooldown, and cooldown expiry remain in-memory state, and the shipped `drawdown_stop_pct` setting is not wired into the runtime risk configuration.
+7. **Breaker persistence is incomplete.** Daily PnL, consecutive-loss cooldown, cooldown expiry, and the peak-equity mark behind `drawdown_stop_pct` remain in-memory state, so every breaker forgets its history on process restart. (`drawdown_stop_pct` itself is now wired into the runtime risk configuration as a peak-equity entry halt; the restart-persistence gap is what remains.)
 
 ## Minimum Bar Before Real Money
 

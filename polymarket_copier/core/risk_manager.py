@@ -131,6 +131,11 @@ class RiskConfig:
 
     # --- Portfolio-level circuit breakers ---
     daily_loss_limit_pct: float = 0.03  # Stop all trading if daily loss > 3% bankroll
+    # Halt NEW entries when equity (bankroll + conservative unrealized) falls this
+    # far below its peak. Complements the daily breaker: that one resets at UTC
+    # midnight, so a slow multi-day bleed never trips it — this one persists for
+    # the process lifetime. 0 disables the check.
+    drawdown_stop_pct: float = 0.08
     max_market_exposure_pct: float = 0.08  # Max 8% of bankroll in any one market
     max_trader_allocation: float = 0.05  # Max 5% of bankroll copied from any one trader
     max_total_exposure_pct: float = 0.30  # H4: Max 30% of bankroll deployed at once
@@ -222,6 +227,10 @@ class RiskManager:
         # Post-loss cooldown state
         self._consecutive_losses: int = 0
         self._cooldown_until: float = 0.0
+        # Peak-equity high-water mark for the drawdown stop. Unlike the daily
+        # breaker this never resets at midnight — it guards multi-day bleeds
+        # that stay under the daily limit each individual day.
+        self._peak_bankroll: float = bankroll
 
     # ── Position factory ──────────────────────────────────────────────────────
 
@@ -416,6 +425,8 @@ class RiskManager:
         async with self._exposure_lock:
             self._daily_pnl += _to_dec(pnl)
             self.bankroll += pnl
+            if self.bankroll > self._peak_bankroll:
+                self._peak_bankroll = self.bankroll
 
             released_d = _to_dec(pos.entry_price * pos.size_shares)
             self._market_exposure[pos.market_id] = max(
@@ -477,6 +488,22 @@ class RiskManager:
         daily_loss_limit = -(self.bankroll * self.cfg.daily_loss_limit_pct)
         if combined_pnl <= daily_loss_limit:
             return f"daily loss limit (realized+unrealized=${combined_pnl:.2f} <= ${daily_loss_limit:.2f})"
+
+        if self.cfg.drawdown_stop_pct > 0:
+            # Lazy peak sample: record_exit() ratchets the peak on realized wins,
+            # but the live-mode rebalance resync assigns self.bankroll directly
+            # (main.py M9), so re-sample here rather than at every mutation site.
+            # A live withdrawal lowers bankroll but not the peak; that reads as a
+            # drawdown and conservatively halts entries until restart.
+            if self.bankroll > self._peak_bankroll:
+                self._peak_bankroll = self.bankroll
+            equity = self.bankroll + unrealized_pnl
+            drawdown_frac = (self._peak_bankroll - equity) / self._peak_bankroll
+            if drawdown_frac >= self.cfg.drawdown_stop_pct:
+                return (
+                    f"drawdown stop (equity=${equity:.2f} is {drawdown_frac:.1%} below "
+                    f"peak ${self._peak_bankroll:.2f}, limit {self.cfg.drawdown_stop_pct:.1%})"
+                )
 
         remaining = self._cooldown_until - time.time()
         if remaining > 0:

@@ -188,3 +188,24 @@ class TestForwardPaperGate:
     async def test_disabled_gate_passes_with_no_evidence(self, portfolio, logger):
         config = AppConfig(mode="live", forward_paper_gate_enabled=False)
         await enforce_forward_paper_gate(config, portfolio, logger)  # no raise
+
+
+class TestRiskConfigWiring:
+    """A RiskManagementConfig field silently no-ops at its dataclass default
+    unless hand-wired into run_bot's RiskConfig(...) construction (CLAUDE.md
+    "unwired field" rule; drawdown_stop_pct shipped unwired until PR that added
+    this class). Guards every shared field, not just the one that regressed."""
+
+    def test_every_shared_risk_field_is_wired_in_run_bot(self):
+        import dataclasses
+        import inspect
+
+        from polymarket_copier.config import RiskManagementConfig
+
+        src = inspect.getsource(run_bot)
+        shared = {f.name for f in dataclasses.fields(RiskConfig)} & set(RiskManagementConfig.model_fields)
+        missing = [n for n in sorted(shared) if f"{n}=config.risk_management.{n}" not in src]
+        assert missing == [], f"RiskConfig fields not wired from config.risk_management in run_bot: {missing}"
+
+    def test_drawdown_stop_dataclass_default_matches_pydantic_default(self):
+        assert RiskConfig().drawdown_stop_pct == AppConfig().risk_management.drawdown_stop_pct
