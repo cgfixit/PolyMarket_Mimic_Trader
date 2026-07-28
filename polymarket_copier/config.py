@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Literal, Optional
@@ -345,8 +346,8 @@ def load_config(
         except ValueError:
             raise ConfigError(f"BANKROLL must be a number, got: {bankroll_str!r}") from None
 
-    if config.bankroll <= 0:
-        raise ConfigError("BANKROLL must be positive")
+    if not math.isfinite(config.bankroll) or config.bankroll <= 0:
+        raise ConfigError("BANKROLL must be positive and finite")
 
     validate_live_config(config)
     return config

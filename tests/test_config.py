@@ -86,6 +86,14 @@ class TestAppConfig:
         with pytest.raises(ConfigError, match="must be positive"):
             load_config(config_path=str(config_file))
 
+    @pytest.mark.parametrize("bankroll", ["nan", "inf", "-inf"])
+    def test_load_config_non_finite_bankroll_raises(self, tmp_path, monkeypatch, bankroll):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "paper"}))
+        monkeypatch.setenv("BANKROLL", bankroll)
+        with pytest.raises(ConfigError, match="must be positive and finite"):
+            load_config(config_path=str(config_file))
+
     def test_load_config_live_mode_requires_private_key(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump({"mode": "live"}))
