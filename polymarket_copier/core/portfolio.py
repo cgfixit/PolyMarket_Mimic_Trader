@@ -401,14 +401,12 @@ class PortfolioManager:
         db = self._require_db()
         open_count = await self.position_count()
         cursor = await db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(realized_pnl), 0), "
-            "SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) "
-            "FROM positions WHERE status='closed'"
+            "SELECT COUNT(*), SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) FROM positions WHERE status='closed'"
         )
         row = await cursor.fetchone()
         total = row[0] if row else 0
-        realized = row[1] if row else 0
-        wins = row[2] if row and row[2] is not None else 0
+        wins = row[1] if row and row[1] is not None else 0
+        realized = (await self.realized_pnl_report())["net_realized_pnl"]
         wr = (wins / total * 100) if total > 0 else 0
         return (
             "=== Portfolio Summary ===\n"
