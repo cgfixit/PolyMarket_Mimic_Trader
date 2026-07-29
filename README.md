@@ -32,7 +32,8 @@ Any future live client requires a venue-specific legal review, a held-out backte
 
 3. COPY       Mirror entries at a flat 50% of source size, capped at 2%
               of bankroll (Kelly-capable, but disabled by default — see below)
-              Skip if price moved >2%, volume <$5K, or market resolves <24h
+              Skip if price worsened >2%, fell >15% from source entry,
+              volume <$5K, or market resolves <24h
               Fee + spread checked before copying
 
 4. MANAGE     Range-relative TP/SL (not flat %), trailing stop,
@@ -62,7 +63,7 @@ Polymarket tokens are bounded in [0, 1]. Flat-percentage TP/SL breaks at extreme
 Traders are ranked by the weighted sum `(4.0 * Sharpe_proxy + 3.5 * Consistency + 2.5 * Recency_weight) / 10`, not a product and not raw PnL. This filters out lucky concentrated bettors in favor of consistently profitable traders across many markets. Additional guards:
 - Sharpe proxy capped at 3.0 and shrunk for small samples to prevent outlier amplification
 - Traders must rank in both the all-time and trailing 30-day leaderboard windows
-- Expectancy / profit-factor weighted instead of raw win rate to avoid favorite-buyer bias
+- Consistency uses win rate × log(sample size); positive expectancy is a separate eligibility gate
 
 ### Fractional Kelly Sizing (opt-in, off by default)
 
@@ -72,7 +73,7 @@ Position sizes default to a flat 50% of source size (`size_multiplier`), capped 
 
 - **WebSocket** feeds real-time prices for positions we hold (sub-second latency for exits)
 - **REST polling** detects new trades from tracked wallets (the WS API doesn't filter by wallet)
-- Shared `aiohttp.ClientSession` with keep-alive across all API clients eliminates redundant TLS handshakes
+- Shared `aiohttp.ClientSession` with keep-alive serves Gamma and tracker REST calls; the CLOB adapter owns its SDK client
 
 ## Project Structure
 
@@ -143,14 +144,14 @@ All trading parameters are in `config.yaml`. The defaults are conservative:
 | `trailing_stop_fraction` | 0.40 | Give back 40% of the run-up from entry, floored at hard SL |
 | `max_market_exposure_pct` | 0.08 | Max 8% of bankroll in any single market |
 | `max_trader_allocation` | 0.05 | Max 5% of bankroll copied from any single trader |
-| `daily_loss_limit_pct` | 0.03 | Halt all trading after 3% daily loss (resets at UTC midnight) |
+| `daily_loss_limit_pct` | 0.03 | Block entries and liquidate all open positions after 3% daily loss (resets at UTC midnight) |
 | `resolution_blackout_hours` | 24 | Never enter markets resolving within 24h |
 | `max_concurrent_positions` | 10 | Maximum open positions at once |
 | `max_trade_age_seconds` | 12 | Skip trades older than this at detection |
 | `cooldown_after_losses` | 3 | Pause new entries after this many consecutive losses |
 | `cooldown_minutes` | 60 | Length of the post-loss cooldown |
-| `kelly_enabled` | false | Enable fractional Kelly sizing (requires ≥50 closed trades to activate) |
-| `kelly_min_trades` | 50 | Minimum closed trades before Kelly activates |
+| `kelly_enabled` | false | Enable fractional Kelly sizing; the optional tracker seed can size before bot history reaches the threshold |
+| `kelly_min_trades` | 50 | Bot-closed-trade threshold for switching from the optional tracker seed to portfolio win rate |
 | `kelly_fraction_multiplier` | 0.25 | Fraction of full Kelly to use (0.25 = quarter-Kelly) |
 | `fail_closed_on_missing_data` | true | Skip a copy when market metadata or price can't be verified |
 | `mirror_source_exits` | true | Exit when the tracked trader exits (SOURCE_EXIT) |
@@ -181,7 +182,7 @@ The bot enforces multiple layers of protection:
 3. **Time exit** — closes stale positions after 48h if price barely moved
 4. **Per-market exposure cap** — max 8% of bankroll in any single market
 5. **Per-trader allocation cap** — max 5% of bankroll copied from any single trader
-6. **Daily loss circuit breaker** — halts all trading after 3% daily loss; resets at UTC midnight
+6. **Daily loss circuit breaker** — blocks entries and liquidates all open positions after 3% daily loss; resets at UTC midnight
 7. **Resolution blackout** — never enters markets resolving within 24h
 8. **Pre-trade depth check** — verifies ask-side liquidity before BUY orders (live mode)
 9. **Portfolio drawdown stop** — halts new entries when equity falls 8% below its peak (persists across the daily reset); trader demotion is a separate Wilson win-rate bound check
@@ -191,10 +192,10 @@ The bot enforces multiple layers of protection:
 13. **Cold-start guard** — first poll per wallet seeds a baseline; no copies from the backlog
 14. **Source exit mirroring** — exits when the tracked trader exits (aligns holding period)
 15. **Rate-limited poll path** — `AsyncLimiter` gates REST polls to prevent 429s
-16. **Realistic paper fills** — paper mode applies slippage + taker fee
+16. **Cost-adjusted synthetic paper fills** — deterministic full fills apply modeled slippage + taker fee; they do not model live book depth, partial fills, or no-fills
 17. **Concurrent exit lock** — per-position `asyncio.Lock` prevents double-SELL race between WebSocket tick and poll sweep
-18. **Entry TOCTOU lock** — global `asyncio.Lock` around position-count check + open prevents simultaneous wallet polls from both passing the cap
-19. **Fee-aware sizing** — expected round-trip fee deducted from edge before Kelly sizing
+18. **Entry-cap reservation** — a global lock protects the count check and pending-entry reservation; order I/O and DB writes run outside it
+19. **Fee-aware copy gate** — sizing runs first, then post-fee edge is checked and shares are reduced to fit the all-in entry budget
 20. **Wallet address normalization** — all Ethereum addresses lowercased at ingestion to prevent case-mixing dict lookup misses
 
 ## Testing
@@ -285,7 +286,7 @@ Structured JSON log events are emitted on the `data` logger channel for downstre
 - `position_opened`, `position_closed` — entry/exit with price, size, PnL
 - `copy_skipped` — every skipped copy with a stable reason code
 - `circuit_breaker_tripped` — daily loss limit hit
-- `trader_demoted` — trader removed from pool when the Wilson upper bound on copy win-rate falls below the configured minimum
+- `trader_demoted` — trader excluded from Kelly priors when the Wilson upper bound on copy win-rate falls below the configured minimum; tracker refresh can still re-add it to active tracking (DD-09)
 
 ## Disclaimer
 

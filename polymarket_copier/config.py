@@ -60,10 +60,10 @@ class CopyTradingConfig(BaseModel):
     # buying the same token would otherwise open unbounded copies on one outcome,
     # concentrating idiosyncratic risk. 0 disables the per-token cap.
     max_positions_per_token: int = 3
-    # M1: re-fetch the price after acquiring the entry lock and skip if it moved
-    # adversely beyond max_price_deviation since detection. The lock-wait window
-    # (another concurrent entry, sizing, DB I/O) lets the price drift; without
-    # this we'd race a stale edge. False disables the second fetch.
+    # M1: re-fetch the price before reserving an entry and skip if it moved
+    # adversely beyond max_price_deviation since detection. Network and concurrent
+    # entry delays let the price drift; without this we'd race a stale edge.
+    # False disables the second fetch.
     revalidate_edge_before_order: bool = True
     min_market_volume: float = 5000
     # Skip trades older than this at detection time — by then the source's alpha

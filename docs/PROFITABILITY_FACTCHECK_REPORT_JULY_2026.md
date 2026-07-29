@@ -11,11 +11,10 @@ Full claim-by-claim ledger: `docs/PR_75_76_77_CLAIMS_NOTEPAD.md`. Methodology ca
 extraction with direct quotes from primary sources, not cross-verified by independent skeptic votes. Confidence
 is noted per finding.
 
-**Current main update, 2026-07-05:** after this report was written, `origin/main` also landed fee-curve realism,
-CLOB fee metadata, live geoblock preflight, profitability timing telemetry, documented WebSocket heartbeat,
-`usdcSize` activity notional parsing, and canonical `paper_taker_fee_rate` cleanup. The original conditional-NO
-profitability verdict still holds, but several implementation blockers listed below are now fixed or partially
-fixed on main.
+**Current main recheck, 2026-07-29 (`d32e17d`):** fee-curve realism, CLOB fee metadata, geoblock preflight,
+timing telemetry, documented WebSocket heartbeat, `usdcSize` activity notional parsing, and canonical
+`paper_taker_fee_rate` cleanup are present. Live mode remains hard-disabled because this repo still uses the
+unsupported CLOB V1 client. The original conditional-NO profitability verdict therefore still holds.
 
 ---
 
@@ -33,9 +32,10 @@ insiders moving prices 7–12× harder) matches the paper as published. Multiple
 
 Two new findings from this fact-check make the picture *worse* than either PR described:
 
-1. **The CFTC opened a new investigation into Polymarket in June 2026** (per a CNBC follow-up), after the
-   July-2025 closure both PRs describe as the end of regulatory risk. The "regulatory all-clear" framing in
-   PR #75 §5 is no longer current.
+1. **[Secondary reporting](https://www.forbes.com/sites/aliciapark/2026/06/26/regulators-are-investigating-polymarket-reports-say-as-senators-demand-a-federal-probe/)
+   said the CFTC opened a new investigation into Polymarket in June 2026.** No public CFTC confirmation was
+   located in the 2026-07-29 recheck, so this is a market signal rather than a verified agency action. It is
+   still enough to reject PR #75 §5's "regulatory all-clear" framing.
 2. **Wallet profit concentration is starker than PR #75 cited.** PR #75 quoted "<1% of wallets take ~half the
    profits" as one Solidus Labs/WSJ statistic. It's actually two different studies with two different numbers:
    Solidus Labs (politics markets only, Dec 2025–Feb 2026: 0.55%/0.26% of wallets take ~50% of gains) and WSJ
@@ -43,10 +43,10 @@ Two new findings from this fact-check make the picture *worse* than either PR de
    figure is the stronger and more representative one, and it's more concentrated than what was quoted.
    Separately, a 2.5M-wallet on-chain analysis found **84.1% of traders lost money**.
 
-Everything else checked out close to as described, with a handful of precision corrections (below) and one
-operational risk neither PR flagged: **py-clob-client-v2's open GitHub issues indicate `signature_type=3` (the
-deposit-wallet auth path both PRs recommend adding config for) has known breakage** — the API key can bind to the
-wrong wallet. That's now surfaced in this repo's config validation (see §3).
+Everything else checked out close to as described, with a handful of precision corrections (below). Third-party
+`py-clob-client-v2` issue reports indicate implementation risk around `signature_type=3`; they are not official
+proof that the deposit-wallet flow is broken. Current official V2 guidance still requires the matching
+[`signature_type=3` and funder configuration](https://docs.polymarket.com/api-reference/authentication).
 
 ---
 
@@ -54,13 +54,13 @@ wrong wallet. That's now surfaced in this repo's config validation (see §3).
 
 | Claim (PR #75/#76/#77) | Fact-check verdict | Correct version |
 |---|---|---|
-| Category taker fee caps: 0.75/1.00/1.25/1.80 sports/politics/culture/crypto | ⚠️ One number off | Economics is **1.50%**, not 1.25% — 1.25% belongs to culture/weather |
-| US DCM maker rebate = flat −$0.31/100 contracts | ❌ Unconfirmed | The only documented rebate mechanism is a **revenue-share pool** (makers split 25% of taker fees, 20% for crypto) on the *global* CLOB — no primary source confirms a flat per-contract US DCM figure |
+| Category taker fee caps: 0.75/1.00/1.25/1.80 sports/politics/culture/crypto | ⚠️ Stale schedule | Current international peak fees are **1.75% crypto**, **1.25% sports/economics/culture/weather/other**, **1.00% finance/politics/mentions/tech**, and **0% geopolitics** ([official schedule](https://docs.polymarket.com/trading/fees), accessed 2026-07-29) |
+| US DCM maker rebate = flat −$0.31/100 contracts | ❌ Unconfirmed | The documented international maker pools distribute **20% of crypto**, **15% of sports**, and **25% of most other charged-category** taker fees; no primary source confirms a flat per-contract US DCM rebate |
 | ICE invested "$2B–2.6B" | ⚠️ Overstated | ICE announced **up to $2B** (Oct 2025, $8B pre-money valuation). The "$2.6B" figure double-counts a 2026 follow-on raise that was part of the same original commitment, not additive |
 | SSRN paper described as a "Yale study" | ⚠️ Imprecise | 3 of 4 authors (Gómez-Cram, Guo, Kung) are London Business School; only Jensen is Yale SOM. Yale's own site published a write-up (likely the source of the label), but "Yale study" overstates Yale's role |
 | "~$3M in related phishing losses" tied to the malicious GitHub copy-bot repos | ❌ Conflates two incidents | The StepSecurity-documented hijacked-org/copy-bot-repo campaign (real, confirmed) and the $3M (revised $3.1M) loss are **separate incidents** — the $3M came from a June 25, 2026 compromise of a third-party front-end vendor injecting malicious JS into Polymarket's own website, unrelated to the GitHub repos |
 | "<1% of wallets take ~half the profits" | ⚠️ Conflates two studies | Solidus Labs (politics markets, defined window) says this; WSJ's venue-wide analysis found a starker **0.1% take 67%**, >70% of users lose money overall |
-| DOJ/CFTC investigations "ended" (regulatory risk resolved) | ⚠️ Stale as of July 2026 | True for the 2022–2025 probes, but the **CFTC opened a new investigation in June 2026** — not mentioned in either PR |
+| DOJ/CFTC investigations "ended" (regulatory risk resolved) | ⚠️ Overstated | The 2022–2025 probes ended, while June 2026 secondary reports alleged a new CFTC investigation; no public agency confirmation was located as of 2026-07-29 |
 
 Everything else — the concave fee formula, the QCEX acquisition and $112M figure, the CFTC Amended Order of
 Designation (~Nov 25, 2025) enabling *intermediated* (not international-CLOB) US access, the international CLOB's
@@ -115,12 +115,12 @@ priorities are the right ones and adds a couple of items it doesn't cover:
 2. **Execution parity reporting.** Persist detection latency, submit latency, fill latency, source price, observed
    spread, book VWAP, fee, size, skip reason, and realized PnL by source wallet and market type.
 3. **`py-clob-client-v2` migration and live auth proof.** Deposit-wallet config exists and geoblock preflight exists,
-   but the exact SDK/signature/funder live order path still needs minimal-fund proof. Track the open
-   `py-clob-client-v2` issues (#70, #90) before using `signature_type=3`.
+   but the exact SDK/signature/funder live order path still needs minimal-fund proof. Treat third-party
+   `py-clob-client-v2` issues (#70, #90) as implementation-risk signals, not official incompatibility findings.
 4. **De-bias trader win-rate/ROI metrics** — worthless-expiry losses aren't counted (no redeem record), inflating
    the tracker's selection metrics and the (currently-disabled) Kelly edge seed.
-5. **Regulatory re-check** — the new June 2026 CFTC investigation (finding #1 above) should be tracked; it wasn't
-   in scope for either prior PR or the readiness plan.
+5. **Regulatory re-check** — track the unconfirmed June 2026 investigation reports (finding #1 above) and seek
+   venue-specific counsel; neither press reporting nor repository inspection establishes legal eligibility.
 
 ---
 

@@ -1,7 +1,7 @@
 # PolyMarket_Mimic_Trader Real-Money Feasibility
 
-**Updated:** 2026-07-20
-**Repo snapshot inspected for this recheck:** `origin/main` at `a867047`.
+**Original analysis updated:** 2026-07-20
+**Repo snapshot rechecked:** 2026-07-29, `origin/main` at `d32e17d`.
 
 ## Verdict
 

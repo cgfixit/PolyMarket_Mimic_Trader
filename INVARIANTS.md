@@ -73,7 +73,7 @@ Unless stated otherwise, "test" means `tests/test_invariants.py::<name>`.
 | Only STOP_LOSS / TRAILING_STOP (and reason-less) losses advance the cooldown streak; SOURCE_EXIT / TIME_EXIT don't; any win resets it | `risk_manager.py::_update_cooldown` (L5) | `TestCooldownAndHalt` (5 tests) |
 | Conservative unrealized PnL counts toward the daily halt (H3) | `risk_manager.py::is_trading_halted` | `test_unrealized_losses_count_toward_the_daily_halt` |
 | The daily-loss window resets at **UTC** midnight regardless of host timezone | `risk_manager.py::_midnight_utc` | `test_daily_window_resets_at_utc_midnight_not_local_midnight` |
-| A daily-loss breach flags **every** open position for exit (full liquidation — current design; docs say "halt", see DD-14 before changing either) | `risk_manager.py::evaluate` priority 0 | `test_daily_loss_breach_flags_every_open_position_for_exit` |
+| A daily-loss breach flags **every** open position for exit (full liquidation — current design; see DD-14 before changing it) | `risk_manager.py::evaluate` priority 0 | `test_daily_loss_breach_flags_every_open_position_for_exit` |
 | `evaluate()` never mutates the position (peak persistence is the caller's job) | `risk_manager.py::evaluate` | `test_evaluate_never_mutates_the_position` |
 | Stale-but-profitable positions are spared the time exit (M8) | same | `test_time_exit_spares_profitable_positions` |
 
@@ -145,12 +145,7 @@ Fixed entries remain below as historical anchors; do not reopen them without a n
   wallets, so a re-add seeds a fresh baseline. Pinned by
   `test_set_wallets_readded_wallet_is_unprimed`.
 - **DD-14** Daily-loss "halt" actually liquidates all open positions (pinned as current
-  behavior by `test_daily_loss_breach_flags_every_open_position_for_exit`; docs disagree).
+  behavior by `test_daily_loss_breach_flags_every_open_position_for_exit`).
 - ~~**DD-23**~~ **FIXED** (commit `99c4ae1`) — tracker activity requests
   `TRADE,REDEEM,REWARD`, reconnecting resolution payouts to the scorer. Pinned by
   `test_fetch_activity_includes_realizations_and_sort`.
-
-Doc-rot items (safe to fix as doc-truth PRs, one concern each): README scoring formula,
-TP/SL tables (README + `risk_manager.py` docstring), trailing-stop description, Kelly
-narrative, "fee-aware sizing" claim + dead `round_trip_fee_pct`, Prometheus metric names,
-`kelly_fraction` key name, SECURITY.md "never retried" wording — see audit DD-15…DD-22.
