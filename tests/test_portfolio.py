@@ -194,6 +194,18 @@ class TestPortfolioManager:
         assert "Portfolio Summary" in summary
         assert "Closed trades: 1" in summary
 
+    @pytest.mark.asyncio
+    async def test_summary_includes_partial_exit_realized_pnl(self, portfolio, rm):
+        pos = await make_position(rm, size=100.0)
+        await portfolio.open_position(pos)
+        await portfolio.close_position(pos.position_id, 0.60, ExitReason.TAKE_PROFIT, filled_shares=40.0)
+
+        summary = await portfolio.summary()
+
+        assert "Open positions: 1" in summary
+        assert "Closed trades: 0" in summary
+        assert "Realized P&L: $4.00" in summary
+
 
 class TestUninitializedGuard:
     """Using a PortfolioManager before `init()` must raise a clear, actionable
