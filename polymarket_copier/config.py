@@ -9,7 +9,7 @@ from typing import Literal, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 class ConfigError(ValueError):
@@ -20,7 +20,11 @@ class ConfigError(ValueError):
     entrypoint translates it into a clean exit (see main.main())."""
 
 
-class TraderSelectionConfig(BaseModel):
+class _FiniteConfigModel(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+
+class TraderSelectionConfig(_FiniteConfigModel):
     min_pnl: float = 10000
     min_win_rate: float = 0.55
     # M12: raised from 50 to 150 — at n=50 the 95% CI on a 55% win rate spans
@@ -40,7 +44,7 @@ class TraderSelectionConfig(BaseModel):
     recent_window_days: int = 30
 
 
-class CopyTradingConfig(BaseModel):
+class CopyTradingConfig(_FiniteConfigModel):
     size_multiplier: float = 0.5
     max_trade_pct: float = 0.02
     max_trader_allocation: float = 0.05
@@ -195,7 +199,7 @@ class CopyTradingConfig(BaseModel):
         return self.paper_taker_fee_pct if self.paper_taker_fee_pct is not None else self.paper_taker_fee_rate
 
 
-class RiskManagementConfig(BaseModel):
+class RiskManagementConfig(_FiniteConfigModel):
     tp_range_fraction: float = 0.40
     sl_range_fraction: float = 0.25
     min_tp_abs: float = 0.03
@@ -229,12 +233,12 @@ class RiskManagementConfig(BaseModel):
     exit_poll_fast_seconds: float = 2.0
 
 
-class LoggingConfig(BaseModel):
+class LoggingConfig(_FiniteConfigModel):
     level: str = "INFO"
     file: str = "trades.log"
 
 
-class AppConfig(BaseModel):
+class AppConfig(_FiniteConfigModel):
     # Literal, not str: ClobClient decides real-vs-simulated orders with
     # `mode == "paper"`, while every safety gate (geoblock preflight,
     # validate_live_config, the forward-paper gate) checks `mode == "live"`.

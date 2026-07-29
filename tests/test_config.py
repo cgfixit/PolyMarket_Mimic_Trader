@@ -94,6 +94,20 @@ class TestAppConfig:
         with pytest.raises(ConfigError, match="must be positive and finite"):
             load_config(config_path=str(config_file))
 
+    @pytest.mark.parametrize(
+        ("section", "field", "value"),
+        [
+            ("copy_trading", "max_trade_pct", float("nan")),
+            ("risk_management", "daily_loss_limit_pct", float("inf")),
+        ],
+    )
+    def test_load_config_non_finite_nested_financial_value_raises(self, tmp_path, section, field, value):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump({"mode": "paper", section: {field: value}}))
+
+        with pytest.raises(ConfigError, match="Invalid configuration"):
+            load_config(config_path=str(config_file))
+
     def test_load_config_live_mode_requires_private_key(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump({"mode": "live"}))
