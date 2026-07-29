@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import math
+
 
 def _float_or_none(value) -> float | None:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def activity_side(raw: dict) -> str:
