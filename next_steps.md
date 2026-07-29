@@ -41,7 +41,6 @@ These are not real-money blockers, but still worth keeping on the backlog:
 | L1 | Monitor | Revisit `_seen_trade_ids` cap if tracked wallets become very high frequency. |
 | L2 | CLOB client | Consider making signer thread count configurable if live order throughput grows. |
 | L3 | Monitor | Add per-wallet circuit breaking for persistent polling failures. |
-| L4 | CLOB client | Add an explicit outer timeout around order-status polling for defensive depth. |
 
 ## Completed Recent Fixes
 

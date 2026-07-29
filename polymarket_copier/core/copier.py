@@ -50,10 +50,9 @@ class CopyTrader:
         self.gamma = gamma_client
         self.config = config
         self.monitor = monitor
-        # Serialises the critical section from position-count check through
-        # open_position() write. Without this, concurrent wallet polls via
-        # asyncio.gather can both read count=N < max before either writes,
-        # opening one extra position and breaching the cap (TOCTOU race).
+        # Serialises the position-cap checks and pending-entry reservation.
+        # Order I/O and DB persistence run outside the lock; _pending_entries
+        # keeps concurrent wallet polls from breaching the cap.
         self._entry_lock = asyncio.Lock()
         # Tracker-observed win rates per wallet address, refreshed by main.py after
         # each TrackerClient.refresh(). Used as a Kelly prior when our own closed-

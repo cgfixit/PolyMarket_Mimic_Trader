@@ -110,9 +110,8 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
     if config.metrics_enabled:
         metrics.start_metrics_server(config.metrics_port)
 
-    # Shared aiohttp session to avoid duplicate TLS handshakes and connection pool
-    # contention across API clients (DataClient, GammaClient, ClobClient).
-    # A single connector can serve all three endpoints efficiently.
+    # Gamma and tracker REST calls share an aiohttp connector; ClobClient owns
+    # the blocking SDK client used for order-book and order operations.
     shared_session = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=15),
         connector=aiohttp.TCPConnector(limit=50, keepalive_timeout=30),
