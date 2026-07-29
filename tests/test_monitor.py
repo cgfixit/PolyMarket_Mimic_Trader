@@ -111,6 +111,29 @@ class TestParseTradeEvent:
         }
         assert _parse_trade_event("0xabc", raw) is None
 
+    @pytest.mark.parametrize(
+        "invalid_field",
+        [
+            {"price": "nan"},
+            {"size": "inf"},
+            {"size": None, "usdcSize": "nan"},
+            {"timestamp": float("nan")},
+            {"price": "1.01"},
+        ],
+    )
+    def test_non_finite_or_out_of_range_financial_fields_return_none(self, invalid_field):
+        raw = {
+            "id": "t1",
+            "side": "BUY",
+            "market": "m",
+            "asset": "a",
+            "price": "0.5",
+            "size": "10",
+            "timestamp": 1_700_000_000,
+            **invalid_field,
+        }
+        assert _parse_trade_event("0xabc", raw) is None
+
     def test_millis_timestamp_normalized(self):
         raw = {
             "id": "t1",

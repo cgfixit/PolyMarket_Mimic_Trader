@@ -654,6 +654,13 @@ def _compute_trader_stats(
             size = activity_notional_usdc(item)
         except (ValueError, TypeError):
             continue
+        if not math.isfinite(price) or not math.isfinite(size):
+            continue
+        if is_redeem:
+            if not 0 <= price <= 1:
+                continue
+        elif not 0 < price <= 1 or size <= 0:
+            continue
 
         ts_raw = item.get("timestamp", item.get("createdAt", 0))
         ts = _parse_timestamp(ts_raw)
@@ -762,6 +769,8 @@ def _parse_timestamp(raw) -> float:
         except ValueError:
             return 0.0
     elif isinstance(raw, (int, float)):
+        if not math.isfinite(raw):
+            return 0.0
         # If in milliseconds (> year 3000 as seconds ≈ 3.2e10)
         return float(raw) / 1_000.0 if raw > 1e12 else float(raw)
     return 0.0

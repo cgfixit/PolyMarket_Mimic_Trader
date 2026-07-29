@@ -154,9 +154,9 @@ class TestComputeTraderStats:
         assert stats.win_rate == 0.0
         assert stats.pnl_per_trade == []
 
-    def test_malformed_price_is_skipped_not_fatal(self):
-        # A record with a non-numeric price must be skipped silently; the valid
-        # round-trip should still be counted. Robustness against dirty API data.
+    def test_malformed_or_non_finite_price_is_skipped_not_fatal(self):
+        # Invalid prices must be skipped silently; the valid round-trip should
+        # still be counted. Robustness against dirty API data.
         activity = [
             {
                 "id": "bad",
@@ -165,6 +165,16 @@ class TestComputeTraderStats:
                 "market": "m",
                 "asset": "a",
                 "price": "not-a-number",
+                "size": "10",
+                "timestamp": 1_700_000_000,
+            },
+            {
+                "id": "non-finite",
+                "type": "trade",
+                "side": "BUY",
+                "market": "m",
+                "asset": "a",
+                "price": "nan",
                 "size": "10",
                 "timestamp": 1_700_000_000,
             },

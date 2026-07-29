@@ -32,6 +32,7 @@ import asyncio
 from contextlib import suppress
 import json
 import logging
+import math
 import random
 import time
 from collections import OrderedDict
@@ -655,7 +656,15 @@ def _parse_trade_event(wallet: str, raw: dict) -> Optional[TradeEvent]:
         else:
             ts = time.time()
 
-        if not market_id or not token_id or price <= 0 or size <= 0:
+        if (
+            not market_id
+            or not token_id
+            or not math.isfinite(price)
+            or not math.isfinite(size)
+            or not math.isfinite(ts)
+            or not 0 < price <= 1
+            or size <= 0
+        ):
             return None
 
         if side_raw not in {"BUY", "SELL"}:
