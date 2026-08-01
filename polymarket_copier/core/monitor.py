@@ -604,6 +604,8 @@ class TradeMonitor:
         new_trades = []
 
         for item in activity:
+            if not isinstance(item, dict):
+                continue
             if not is_trade_activity(item):
                 continue
 
