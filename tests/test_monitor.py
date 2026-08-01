@@ -189,6 +189,12 @@ class TestTradeMonitor:
         assert len(new) == 1
         assert new[0]["id"] == "t1"
 
+    def test_filter_ignores_malformed_rows(self):
+        monitor = TradeMonitor(tracked_wallets=["0xabc"], on_trade=lambda e: None)
+        trade = {"id": "t1", "type": "trade", "side": "BUY"}
+
+        assert monitor._filter_new_trades("0xabc", [trade, "malformed"]) == [trade]
+
     @pytest.mark.asyncio
     async def test_handle_ws_message_emits_price_tick(self):
         ticks = []
