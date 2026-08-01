@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -201,13 +202,20 @@ def _parse_market(raw: dict) -> Market:
         elif outcome == "no":
             token_no = tid
 
+    try:
+        volume_24h = float(raw.get("volume24hr", raw.get("volume_24h", 0)) or 0)
+    except (TypeError, ValueError, OverflowError):
+        volume_24h = 0.0
+    if not math.isfinite(volume_24h) or volume_24h < 0:
+        volume_24h = 0.0
+
     return Market(
         condition_id=str(raw.get("condition_id", raw.get("conditionId", raw.get("id", "")))),
         question=str(raw.get("question", raw.get("title", ""))),
         token_id_yes=token_yes or str(raw.get("token_id_yes", "")),
         token_id_no=token_no or str(raw.get("token_id_no", "")),
         resolve_time=_parse_resolve_time(raw),
-        volume_24h=float(raw.get("volume24hr", raw.get("volume_24h", 0)) or 0),
+        volume_24h=volume_24h,
         active=_as_bool(raw.get("active"), True),
         closed=_as_bool(raw.get("closed"), False),
         archived=_as_bool(raw.get("archived"), False),
