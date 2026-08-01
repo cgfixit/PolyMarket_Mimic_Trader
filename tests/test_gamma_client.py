@@ -152,6 +152,11 @@ class TestParseMarket:
         market = _parse_market({"condition_id": "c1"})
         assert market.volume_24h == 0.0
 
+    @pytest.mark.parametrize("raw_volume", ["nan", "inf", "-inf", -1, "invalid"])
+    def test_invalid_volume_fails_closed(self, raw_volume):
+        market = _parse_market({"condition_id": "c1", "volume24hr": raw_volume})
+        assert market.volume_24h == 0.0
+
     def test_extracts_fee_metadata(self):
         market = _parse_market({"condition_id": "c1", "feesEnabled": True, "feeRate": "0.07"})
         assert market.fees_enabled is True
