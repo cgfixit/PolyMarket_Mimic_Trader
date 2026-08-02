@@ -36,8 +36,8 @@ python -m pytest --version && python -m ruff --version && python -m mypy --versi
   || pip install pytest pytest-asyncio pytest-cov ruff mypy
 ```
 
-Report the local Python version: CI runs 3.10, 3.11, and 3.12; you are testing only one of
-them. Note this in the output.
+Report the local Python version: CI runs 3.12 and 3.13; you are testing only one of them.
+Note this in the output.
 
 ## Step 2 — Run the gates
 
@@ -90,7 +90,7 @@ Output exactly this shape:
 | ruff lint             | ruff check .                              | PASS   |
 | ruff format           | ruff format --check .                     | PASS   |
 | mypy                  | mypy polymarket_copier (CI flags)         | PASS   |
-| pytest                | pytest -m "not integration"               | PASS (N passed, local pyX.Y; CI also runs 3.10-3.12) |
+| pytest                | pytest -m "not integration"               | PASS (N passed, local pyX.Y; CI also runs 3.12/3.13) |
 | grep: async blocking  | diff vs origin/main                       | CLEAN  |
 | grep: :memory:        | diff vs origin/main                       | CLEAN  |
 | grep: release_exposure| diff vs origin/main                       | CLEAN  |
