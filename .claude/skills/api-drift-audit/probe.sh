@@ -43,7 +43,7 @@ echo "== api-drift probe → $OUT =="
 date -u +"probe started %Y-%m-%dT%H:%M:%SZ"
 
 # 1. Leaderboard (tracker.py) — also the source of a live wallet for the activity probe.
-probe "leaderboard" "$DATA_API/v1/leaderboard?window=30d&limit=5"
+probe "leaderboard" "$DATA_API/v1/leaderboard?category=OVERALL&timePeriod=MONTH&orderBy=PNL&limit=5&offset=0"
 
 WALLET="$(first_json_value "$OUT/leaderboard.json" proxyWallet)"
 [ -z "$WALLET" ] && WALLET="$(first_json_value "$OUT/leaderboard.json" wallet)"
@@ -51,7 +51,7 @@ WALLET="$(first_json_value "$OUT/leaderboard.json" proxyWallet)"
 
 # 2. Wallet activity (monitor.py / tracker.py / utils/activity.py).
 if [ -n "$WALLET" ]; then
-  probe "activity" "$DATA_API/activity?user=$WALLET&limit=10"
+  probe "activity" "$DATA_API/activity?user=$WALLET&limit=10&type=TRADE&sortBy=TIMESTAMP&sortDirection=DESC"
 else
   echo "PROBE|activity|SKIPPED|no wallet extractable from leaderboard response — inspect $OUT/leaderboard.json"
   FAIL=1

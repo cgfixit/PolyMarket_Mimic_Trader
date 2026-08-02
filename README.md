@@ -104,7 +104,7 @@ polymarket_copier/
 
 ### Prerequisites
 
-- Python 3.10+ (CI runs 3.11 and 3.12)
+- Python 3.10+ (CI runs the full offline suite on 3.12 and 3.13)
 - No wallet or private key is required for supported paper mode
 
 ### Installation

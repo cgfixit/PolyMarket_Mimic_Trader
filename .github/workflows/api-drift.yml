@@ -1,0 +1,37 @@
+name: Advisory Polymarket API drift
+
+on:
+  schedule:
+    - cron: "23 6 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+# Scheduled/manual only: upstream drift alerts maintainers without becoming a PR gate.
+jobs:
+  public-api-probe:
+    name: Public GET probe (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Capture public API responses
+        shell: bash
+        run: bash .claude/skills/api-drift-audit/probe.sh "$RUNNER_TEMP/api-drift-probes"
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: api-drift-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/api-drift-probes
+          if-no-files-found: warn
+          retention-days: 7

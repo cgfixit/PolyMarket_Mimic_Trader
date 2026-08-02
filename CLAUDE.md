@@ -16,7 +16,7 @@ pip install -r requirements.txt
 pip install pytest-cov mypy ruff        # CI installs these ad-hoc; they are NOT in requirements.txt
 
 # The four CI gates — run all of them before any push:
-pytest -m "not integration"                                      # CI runs on py3.11/3.12
+pytest -m "not integration"                                      # CI runs on py3.12/3.13
 ruff check .
 ruff format --check .                                            # CI enforces formatting too
 mypy polymarket_copier --ignore-missing-imports --no-strict-optional   # exact CI flags
@@ -41,9 +41,9 @@ Caveats a weaker model will trip on:
   chase the regression-test criteria in "Quality bar" below.
 - The `/preflight` skill (`.claude/skills/preflight/`) runs all gates plus repo-specific
   regression greps in one command. Use it before every push.
-- CI's matrix (`.github/workflows/ci.yml`) tests only py3.11/3.12; `pyproject.toml` still
-  declares `requires-python = ">=3.10"` / `target-version = "py310"`, but 3.10 is not actually
-  exercised by CI. Don't assume 3.10 is covered.
+- CI's matrix (`.github/workflows/ci.yml`) tests only py3.12/3.13; `pyproject.toml` still
+  declares `requires-python = ">=3.10"` / `target-version = "py310"`, but 3.10 and 3.11 are not
+  exercised by CI. Don't assume they are covered.
 
 ## System map
 
