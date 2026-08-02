@@ -131,6 +131,18 @@ class TestPortfolioManager:
         fetched = await portfolio.get_position(pos.position_id)
         assert fetched.peak_price == 0.70
 
+    async def test_batch_update_peak_prices(self, portfolio, rm):
+        """A batch flush must preserve each position's distinct peak value."""
+        first = await make_position(rm, market_id="first")
+        second = await make_position(rm, market_id="second")
+        await portfolio.open_position(first)
+        await portfolio.open_position(second)
+
+        await portfolio.batch_update_peak_prices({first.position_id: 0.61, second.position_id: 0.72})
+
+        assert (await portfolio.get_position(first.position_id)).peak_price == pytest.approx(0.61)
+        assert (await portfolio.get_position(second.position_id)).peak_price == pytest.approx(0.72)
+
     @pytest.mark.asyncio
     async def test_trader_pnl_aggregates_closed(self, portfolio, rm):
         pos1 = await make_position(rm, market_id="a", entry=0.50, size=1000.0, trader="0xwhale")

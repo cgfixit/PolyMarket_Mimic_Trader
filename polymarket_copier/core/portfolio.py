@@ -315,11 +315,10 @@ class PortfolioManager:
         if not updates:
             return
         db = self._require_db()
-        for position_id, peak in updates.items():
-            await db.execute(
-                "UPDATE positions SET peak_price=? WHERE position_id=?",
-                (peak, position_id),
-            )
+        await db.executemany(
+            "UPDATE positions SET peak_price=? WHERE position_id=?",
+            ((peak, position_id) for position_id, peak in updates.items()),
+        )
         await db.commit()
 
     async def get_open_unrealized_pnl_conservative(self) -> float:
