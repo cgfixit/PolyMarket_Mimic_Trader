@@ -9,6 +9,7 @@ Start here:
 - Read `.codex/README.md` for the repo-local Codex workflow.
 - Use `.codex/skills/refactor/SKILL.md` when asked to refactor structure or run an iterative speed/refactor loop.
 - Use `.codex/commands/optimizer.md` for read-only audit and quality-review passes.
+- For an `optimize-money-mode` run, read `PROFITABILITY_ANALYSIS_JUNE_2026.md`, `next_steps.md`, and `docs/POLYMARKET_REAL_MONEY_READINESS_PR_PLAN_2026-07-03.md` as the current planning ledger; use `docs/DUE_DILIGENCE_AUDIT_2026-07-08.md` for evidence, then re-verify external claims. These docs never authorize live mode.
 - Use Ponytail when the user asks for the shortest safe fix or when deleting over-engineering.
 - Claude-side skills live in `.claude/skills/`: `preflight` (local CI parity gate), `fact-check` (claims ledger), `next-chunk` (backlog → draft PR), `api-drift-audit` (read-only Polymarket API drift probe).
 

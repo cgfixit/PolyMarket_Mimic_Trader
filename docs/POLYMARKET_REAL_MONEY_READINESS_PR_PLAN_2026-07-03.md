@@ -4,12 +4,12 @@
 
 This bot should be modernized as a realistic paper/research demo first. Real-money use stays blocked until forward paper results prove net edge after spread, slippage, fees, latency, and jurisdiction checks.
 
-## Status As Of 2026-07-05
+## Status As Of 2026-08-08
 
 - PR 1 is implemented on main: current leaderboard/API shape, tradability gates, and documented WebSocket heartbeat are handled.
-- PR 2 is mostly implemented on main: paper fills/copy gates use the price-shaped fee curve and CLOB fee metadata where available. Remaining work is calibration and paper/live execution reporting from real order-book snapshots.
-- PR 3 is partially implemented on main: `signature_type`/`funder` config and live geoblock preflight exist. Remaining work is SDK-v2 migration or proof, minimal-fund live auth testing, and venue/legal sign-off.
-- PR 4 is still open and is the real go-live gate: backtesting, de-biased trader metrics, and net expectancy reports.
+- PR 2 is mostly implemented on main: paper fills/copy gates use the price-shaped fee curve and CLOB fee metadata where available. Remaining work is recorded-book replay with size-aware VWAP, partial fills, and no-fills.
+- PR 3 is partially implemented on main: `signature_type`/`funder` config and live geoblock preflight exist. Remaining work is supported SDK-v2 migration, minimal-fund live auth testing, and venue/legal sign-off.
+- PR 4 is still open and is the real go-live gate: backtesting, income-classified trader metrics, authoritative fill reconciliation, and net expectancy reports.
 
 ## PR 1: API Drift And Tradability Fixes
 
@@ -38,6 +38,7 @@ Required changes:
 - Rename config to `paper_taker_fee_rate` or keep a backward-compatible alias with a deprecation note.
 - Pull market fee parameters from CLOB market info when available.
 - Keep spread/slippage separate from fees. Do not bundle them into one percentage.
+- Replay recorded order-book snapshots and retain the decision-time depth, VWAP, partial-fill, and no-fill outcome.
 - Update paper fill tests at low, mid, and high prices so fee shape is verified.
 - Update the pre-copy edge gate to compare expected TP against spread + fee + exit cost, not a flat multiplier.
 
@@ -46,6 +47,7 @@ Acceptance:
 - Paper fill at $0.50 should match the fee-rate table.
 - Paper fill near $0.05 and $0.95 should charge materially less fee than $0.50.
 - Edge gate should skip trades only when expected bounded upside is consumed by realistic costs.
+- A shallow-book replay must not report a synthetic full fill when the recorded depth supports only a partial fill or no fill.
 
 ## PR 3: Live Auth/SDK Compatibility
 
@@ -53,7 +55,7 @@ Do this only after deciding whether live mode remains in scope.
 
 Required changes:
 
-- Evaluate migration from `py-clob-client` to `py-clob-client-v2`.
+- Migrate from `py-clob-client` to `py-clob-client-v2`, or remove the international live path; a V1 proof is not a production compatibility proof.
 - Add explicit config for signature type and funder/deposit wallet.
 - Derive or load L2 API credentials without logging secrets.
 - Add a startup geoblock check before any live order path.
@@ -63,6 +65,7 @@ Acceptance:
 
 - Live mode refuses to start without private key, signature type, funder when required, and successful geoblock eligibility.
 - Unit tests cover config validation without real credentials.
+- Adapter contract tests cover V2 order creation, order-status lookup, and redacted error handling without real credentials.
 
 ## PR 4: Profitability Evidence
 
@@ -71,6 +74,8 @@ This is not solved by code cleanup.
 Required changes:
 
 - Persist source trade timestamp, detection timestamp, submit timestamp, fill timestamp, source price, observed price, fill price, spread, fee, size, skip reason, and realized PnL.
+- Persist source activity type and separate directional PnL from redemption, reward, rebate, referral, and unknown activity.
+- For a future live path, obtain authoritative order/trade state before changing a position or PnL; absent concrete fill data remains unknown.
 - Add a daily report grouped by source wallet, category, market, and skip reason.
 - Add a forward-paper gate: no live mode until a configured minimum sample shows positive net expectancy.
 
@@ -78,6 +83,7 @@ Acceptance:
 
 - 30+ days of forward paper data.
 - Net expectancy remains positive after realistic costs.
+- Fixtures prove that reward/rebate rows do not close a directional position and that unknown fills create no position or realized PnL.
 - Drawdown and daily loss controls are exercised in paper mode.
 
 ## Non-Goals
