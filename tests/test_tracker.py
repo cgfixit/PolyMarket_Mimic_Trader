@@ -149,6 +149,37 @@ class TestComputeTraderStats:
         assert stats.trade_count == 1
         assert stats.win_rate == 1.0
 
+    def test_descending_activity_is_paired_chronologically(self):
+        """Newest-first API rows must still form the correct BUY then SELL round trip."""
+        activity = [
+            {
+                "id": "s1",
+                "type": "trade",
+                "side": "SELL",
+                "market": "m",
+                "asset": "a",
+                "price": "0.60",
+                "size": "100",
+                "timestamp": 1_700_001_000,
+            },
+            {
+                "id": "b1",
+                "type": "trade",
+                "side": "BUY",
+                "market": "m",
+                "asset": "a",
+                "price": "0.50",
+                "size": "100",
+                "timestamp": 1_700_000_000,
+            },
+        ]
+
+        stats = _compute_trader_stats("0xabc", "Name", 50000, activity)
+
+        assert stats.trade_count == 1
+        assert stats.win_rate == 1.0
+        assert stats.pnl_per_trade == [pytest.approx(0.2)]
+
     def test_no_trades_falls_back(self):
         stats = _compute_trader_stats("0xabc", "Name", 50000, [])
         assert stats.win_rate == 0.0
@@ -266,6 +297,53 @@ class TestComputeTraderStats:
         # buy_shares = 100 / 0.50 = 200; pnl_dollars = (1.0 - 0.5) * 200 = 100.0
         # cost_basis = 0.50 * 200 = 100.0; roi = 100.0 / 100.0 = 1.0 (100% return)
         assert stats.pnl_per_trade == [pytest.approx(1.0)]
+
+    def test_reward_does_not_close_open_buy(self):
+        """Non-directional reward income cannot identify a directional position."""
+        buy = {
+            "id": "b1",
+            "type": "trade",
+            "side": "BUY",
+            "market": "m",
+            "asset": "a",
+            "price": "0.50",
+            "size": "100",
+            "timestamp": 1_700_000_000,
+        }
+        reward = {"id": "r1", "type": "reward", "market": "m", "asset": "a", "timestamp": 1_700_002_000}
+
+        stats = _compute_trader_stats("0xabc", "Name", 50000, [buy, reward])
+
+        assert stats.pnl_per_trade == []
+        assert stats.win_rate == 0.0
+
+    def test_blank_asset_redeem_is_not_paired(self):
+        """A current-shape redemption without a token cannot close an empty-key buy."""
+        buy = {
+            "id": "b1",
+            "type": "trade",
+            "side": "BUY",
+            "market": "m",
+            "asset": "",
+            "price": "0.50",
+            "size": "100",
+            "timestamp": 1_700_000_000,
+        }
+        redeem = {
+            "id": "r1",
+            "type": "redeem",
+            "conditionId": "m",
+            "asset": "",
+            "outcomeIndex": 999,
+            "price": 0,
+            "usdcSize": "100",
+            "timestamp": 1_700_002_000,
+        }
+
+        stats = _compute_trader_stats("0xabc", "Name", 50000, [buy, redeem])
+
+        assert stats.pnl_per_trade == []
+        assert stats.win_rate == 0.0
 
     def test_redeem_defaults_to_payout_one_when_no_price(self):
         # No explicit per-share price on the redeem record → default to 1.0.
@@ -575,7 +653,7 @@ class TestTrackerActivityFetch:
                 {
                     "user": "0xabc",
                     "limit": 25,
-                    "type": "TRADE,REDEEM,REWARD",
+                    "type": "TRADE,REDEEM",
                     "sortBy": "TIMESTAMP",
                     "sortDirection": "DESC",
                 },

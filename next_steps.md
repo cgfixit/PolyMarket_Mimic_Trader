@@ -9,7 +9,7 @@ The remaining question is narrower: can this bot prove a net edge outside paper 
 - **Venue/legal:** the bot targets the international Polymarket CLOB. US/Georgia real-money use needs a current venue-specific legal review and likely a separate regulated venue path.
 - **Backtesting:** no held-out offline backtest proves selected traders remain profitable after spread, slippage, fees, latency, skipped fills, and no-fills.
 - **Paper/live gap:** paper mode remains useful for plumbing, but it cannot prove live execution quality or fill selection bias.
-- **Activity attribution:** current scoring treats `REWARD` as redemption. Directional ROI/win-rate must exclude reward, rebate, referral, and unknown activity until it is attributable to a position.
+- **Activity attribution:** `REWARD` and current blank-asset redemption rows are now excluded from directional scoring. Resolution ROI/win-rate remains incomplete until every realization has token and payout attribution and worthless expiries are represented.
 - **Fill certainty:** missing concrete live fill fields currently fall back to a full fill at the quote. Future position/PnL accounting needs authoritative order/trade state and an explicit unknown state.
 - **SDK/auth:** deposit-wallet config exists, but the legacy V1 client needs a supported V2 migration and contract proof before any sizing.
 
