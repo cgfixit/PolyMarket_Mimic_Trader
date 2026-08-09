@@ -9,18 +9,19 @@ The remaining question is narrower: can this bot prove a net edge outside paper 
 - **Venue/legal:** the bot targets the international Polymarket CLOB. US/Georgia real-money use needs a current venue-specific legal review and likely a separate regulated venue path.
 - **Backtesting:** no held-out offline backtest proves selected traders remain profitable after spread, slippage, fees, latency, skipped fills, and no-fills.
 - **Paper/live gap:** paper mode remains useful for plumbing, but it cannot prove live execution quality or fill selection bias.
-- **Trader metric bias:** worthless-expiry losses and unredeemed positions can still inflate ROI/win-rate inputs.
-- **SDK/auth:** deposit-wallet config exists, but the exact live order path still needs minimal-fund proof before any sizing.
+- **Activity attribution:** current scoring treats `REWARD` as redemption. Directional ROI/win-rate must exclude reward, rebate, referral, and unknown activity until it is attributable to a position.
+- **Fill certainty:** missing concrete live fill fields currently fall back to a full fill at the quote. Future position/PnL accounting needs authoritative order/trade state and an explicit unknown state.
+- **SDK/auth:** deposit-wallet config exists, but the legacy V1 client needs a supported V2 migration and contract proof before any sizing.
 
 ## Highest-Value Work
 
 | ID | Work | Why it matters |
 |----|------|----------------|
 | R1 | Offline backtest harness | Replays historical leaderboard/activity and market data to measure forward net expectancy. |
-| R2 | Execution parity report | Records detection latency, spread, book VWAP, fee, skip reason, simulated fill, and realized PnL. |
-| R3 | Trader metric de-biasing | Accounts for unresolved/worthless outcomes so selection does not chase inflated winners. |
-| R4 | Paper fill realism | Uses real order-book snapshots for size-aware paper VWAP and no-fill/partial-fill modeling. |
-| R5 | Live auth proof | Verifies the configured SDK/signature/funder path with minimal funds and redacted logs. |
+| R2 | Execution parity report | Records detection latency, spread, book VWAP, fee, skip reason, authoritative order/trade status, and labels unknown fills separately from simulated fills. |
+| R3 | Trader metric de-biasing | Accounts for unresolved/worthless outcomes and separates directional PnL from redemption, reward, rebate, referral, and unknown activity. |
+| R4 | Paper fill realism | Replays recorded order-book snapshots for size-aware paper VWAP, partial-fill, and no-fill outcomes. |
+| R5 | Live auth proof | Migrates to the supported V2 SDK and verifies the SDK/signature/funder path with minimal funds and redacted logs. |
 | R6 | Venue adapter decision | Decide whether live mode targets the international CLOB, Polymarket US, Kalshi, or remains paper-only. |
 
 ## Operational Checklist Before Any Live Test
@@ -28,6 +29,7 @@ The remaining question is narrower: can this bot prove a net edge outside paper 
 - [ ] Legal/venue review completed for operator location, venue, automation, and funding path.
 - [ ] Backtest shows positive net expectancy on held-out data.
 - [ ] Paper reports show positive expectancy with realistic book-depth simulation.
+- [ ] Reports separate directional PnL from non-directional income, and no unknown fill is counted as a position or realized PnL.
 - [ ] Live auth path tested with minimal funds and no secret leakage in logs.
 - [ ] Daily loss stop, alerts, and rollback plan exercised in paper mode.
 - [ ] Bankroll limited to a disposable test amount.

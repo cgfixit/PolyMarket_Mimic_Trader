@@ -34,8 +34,19 @@ Those fixes remove several stale implementation blockers. They do **not** prove 
 - `config.yaml` uses the canonical `paper_taker_fee_rate` key.
 - Partial exit fills retain and account for the open remainder.
 - BUY shares are sized against conservative all-in entry cost so slippage and fees cannot push a configured dollar budget above its ceiling.
-- Tracker activity includes `TRADE`, `REDEEM`, and `REWARD`, reconnecting held-to-resolution payouts to the scorer.
+- Tracker activity includes `TRADE`, `REDEEM`, and `REWARD`; the current scorer treats `REWARD` as a realization, so its metrics remain candidates until activity attribution is separated.
 - Re-added wallets must seed a fresh cold-start baseline before emitting trades.
+
+## 2026-08-08 FINDINGS SUMMARY
+
+**Repo snapshot:** `origin/main` at `c5064a7acde409f9b0a84af8061922bfc264da8f`.
+
+- **[verified repo fact]** `tracker.py::_compute_trader_stats` fetches `TRADE,REDEEM,REWARD` and processes `reward` through the redemption branch. The current Activity API defines `REDEEM`, `REWARD`, `MAKER_REBATE`, and `REFERRAL_REWARD` as distinct activity types. Future directional ROI/win-rate accounting must close a known position only from attributable trade/redemption evidence and keep reward/rebate/referral income separate.
+- **[verified repo fact]** `copier.py::CopyTrader._reconcile_fill` assumes a full fill at the quoted price when a live response has no concrete fill size. Current order documentation distinguishes an accepted/matched order from a later confirmed or failed trade. A future live path must represent an absent fill as unknown rather than create a position or PnL from it.
+- **[verified repo fact]** Paper fills remain synthetic full fills. This is useful plumbing, not execution evidence; realistic evidence requires recorded order-book snapshots with size-aware VWAP plus partial-fill and no-fill replay.
+- **[verified external fact]** Current official docs still name `py-clob-client-v2` as the supported Python CLOB client, while this tree pins legacy `py-clob-client`. The runtime hard-disables live mode, so this is a planning blocker rather than a request to change the running client.
+- **[inference]** Separating directional PnL from non-directional income and unknown fills reduces false evidence of copy-trading edge; it does not establish profitability.
+- **[unknown]** No repository or public-doc review can establish venue eligibility or legal permission. Counsel remains required.
 
 ## Why Real-Money Mode Is Still Blocked
 
@@ -43,9 +54,10 @@ Those fixes remove several stale implementation blockers. They do **not** prove 
 2. **No profitability proof.** There is still no held-out offline backtest that measures selected traders forward, net of spread, slippage, taker fees, latency, skipped fills, no-fills, and market impact.
 3. **Paper mode is not a go-live signal.** Paper mode is useful for plumbing and telemetry, but it still cannot prove live fill quality, partial/no-fill selection bias, or thin-book market impact.
 4. **The copied signal is delayed and public.** The bot copies after public activity appears. Skilled Polymarket traders appear to earn much of their edge by reacting first; a delayed copier may buy after the source trade has already moved the book.
-5. **Trader metrics remain biased.** Redemption and reward rows now reach the scorer, but worthless-expiry losses and unredeemed outcomes can still be absent. Historical ROI/win-rate inputs therefore remain incomplete even though the earlier resolution-fetch disconnect is fixed.
-6. **The live client is on an unsupported protocol.** Production trading moved to CLOB V2, while this repo still uses the legacy V1 package and order structures. Deposit-wallet configuration does not make that adapter compatible. A V2 migration and minimal-funds order-path proof are prerequisites, not optional hardening.
-7. **Breaker persistence is incomplete.** Daily PnL, consecutive-loss cooldown, cooldown expiry, and the peak-equity mark behind `drawdown_stop_pct` remain in-memory state, so every breaker forgets its history on process restart. (`drawdown_stop_pct` itself is now wired into the runtime risk configuration as a peak-equity entry halt; the restart-persistence gap is what remains.)
+5. **Trader metrics lack income provenance.** Redemption and reward rows now reach the scorer, but `REWARD` is a distinct activity type that is currently treated as a redemption. Worthless-expiry losses and unredeemed outcomes can also be absent. Historical ROI/win-rate inputs are therefore incomplete and must not blend directional results with reward/rebate/referral income.
+6. **Live fill accounting is optimistic when the venue response is incomplete.** `_reconcile_fill` defaults missing fill fields to a full fill at the current quote. Any future live path must obtain authoritative order/trade state or keep the result unknown; it must not manufacture a position, exposure release, or PnL.
+7. **The live client is on an unsupported protocol.** Production trading moved to CLOB V2, while this repo still uses the legacy V1 package and order structures. Deposit-wallet configuration does not make that adapter compatible. A V2 migration and minimal-funds order-path proof are prerequisites, not optional hardening.
+8. **Breaker persistence is incomplete.** Daily PnL, consecutive-loss cooldown, cooldown expiry, and the peak-equity mark behind `drawdown_stop_pct` remain in-memory state, so every breaker forgets its history on process restart. (`drawdown_stop_pct` itself is now wired into the runtime risk configuration as a peak-equity entry halt; the restart-persistence gap is what remains.)
 
 ## Minimum Bar Before Real Money
 
@@ -53,7 +65,8 @@ Do not fund live mode until all of these are true:
 
 - A held-out offline backtest shows positive net expectancy after fees, spread, slippage, latency, and skipped/no-fill modeling.
 - Paper mode reports include detection latency, submit latency, observed spread, simulated VWAP, fee, skip reason, and realized PnL by trader and market type.
-- Trader scoring is de-biased for missing worthless-expiry losses or explicitly excludes strategies where that bias dominates.
+- Trader scoring is de-biased for missing worthless-expiry losses and segregates directional PnL from redemption, reward, rebate, and referral activity; unknown activity remains unscored.
+- An absent concrete fill size or price creates no position, exposure release, or PnL in any future live path.
 - A venue-specific legal review confirms the operator, state, venue, automation method, and funding path are allowed.
 - The live adapter uses the supported CLOB V2 SDK, pUSD collateral model, V2 order structure, and current auth/signing flow.
 - The exact live auth and order path is tested with minimal funds and redacted logs.
@@ -63,8 +76,15 @@ Do not fund live mode until all of these are true:
 
 1. Decide whether to migrate to international CLOB V2 or remove that live path; scope a Polymarket US adapter separately for US real-money trading.
 2. Build the offline backtest harness and make it the real go-live gate.
-3. Add paper/live execution parity reports from real order-book snapshots.
-4. De-bias trader metrics for worthless expiries and unredeemed outcomes.
+3. Add paper/live execution parity reports from recorded order-book snapshots, including VWAP, partial-fill, and no-fill replay.
+4. De-bias trader metrics for worthless expiries and unredeemed outcomes, and separate directional PnL from reward/rebate/referral income.
+5. After the V2 migration decision, reconcile positions only from authoritative order/trade state; missing fill data remains unknown.
+
+## Planning Sources Rechecked (accessed 2026-08-08)
+
+- [Polymarket activity API](https://docs.polymarket.com/api-reference/core/get-user-activity) — distinct `REDEEM`, `REWARD`, and rebate/referral activity types.
+- [Polymarket order lifecycle](https://docs.polymarket.com/concepts/order-lifecycle) — order acceptance/match and trade confirmation are separate states.
+- [Polymarket CLOB V2 migration](https://docs.polymarket.com/v2-migration) — legacy Python CLOB client is V1-only; current production work requires V2.
 
 ## Primary Sources Rechecked (accessed 2026-07-20)
 
