@@ -146,6 +146,7 @@ Fixed entries remain below as historical anchors; do not reopen them without a n
   `test_set_wallets_readded_wallet_is_unprimed`.
 - **DD-14** Daily-loss "halt" actually liquidates all open positions (pinned as current
   behavior by `test_daily_loss_breach_flags_every_open_position_for_exit`).
-- ~~**DD-23**~~ **FIXED** (commit `99c4ae1`) — tracker activity requests
-  `TRADE,REDEEM,REWARD`, reconnecting resolution payouts to the scorer. Pinned by
+- ~~**DD-23**~~ **FIXED** (commit `99c4ae1`, attribution tightened 2026-08-08) — tracker
+  activity requests `TRADE,REDEEM`, excludes non-directional rewards and current blank-asset
+  redemptions, and retains the legacy token-attributed redemption path. Pinned by
   `test_fetch_activity_includes_realizations_and_sort`.

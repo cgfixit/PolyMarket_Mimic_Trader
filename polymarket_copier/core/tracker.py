@@ -553,16 +553,15 @@ class TrackerClient:
         address: str,
     ) -> List[dict]:
         """
-        Fetch recent trade and realization activity for a wallet.
-        API: GET /activity?user={address}&limit=N&type=TRADE,REDEEM,REWARD
+        Fetch recent trade and token-attributable realization activity for a wallet.
+        API: GET /activity?user={address}&limit=N&type=TRADE,REDEEM
         """
         url = f"{self._data_api}/activity"
         params: Dict[str, Any] = {
             "user": address,
             "limit": self.cfg.activity_fetch_limit,
-            # Include resolution payouts so the existing redemption-aware
-            # scorer can close buy-and-hold positions.
-            "type": "TRADE,REDEEM,REWARD",
+            # REWARD is non-directional income, not a position realization.
+            "type": "TRADE,REDEEM",
             "sortBy": "TIMESTAMP",
             "sortDirection": "DESC",
         }
@@ -617,14 +616,14 @@ def _compute_trader_stats(
     --------------------
     A common Polymarket alpha is buying a mispriced YES/NO token and HOLDING it to
     resolution — never SOLD, but REDEEMED when the market resolves (winning shares
-    pay $1.00, losing shares pay $0.00). We treat redemption/claim records as realizing
-    events so held-to-resolution outcomes are counted, not silently dropped.
+    pay $1.00, losing shares pay $0.00). We treat token-attributable redemption/claim
+    records as realizing events so held-to-resolution outcomes can be counted.
 
     LIMITATION (honest accounting): we can only credit redemptions we OBSERVE in the
-    activity feed. Winning positions emit a redeem/claim record (captured). Losing
-    positions expiring worthless typically emit NO redeem record — nothing to redeem —
-    so those losses remain uncounted. This biases observed win_rate UPWARD for traders
-    who hold losers to worthless expiry. Monitor this when interpreting stats.
+    activity feed. Current redemption rows may omit the token asset and are excluded
+    rather than guessed. Losing positions expiring worthless typically emit NO redeem
+    record — nothing to redeem — so those losses remain uncounted. This biases observed
+    win_rate UPWARD for traders who hold losers to worthless expiry.
 
     Partial data is excluded rather than estimated.
     """
@@ -637,9 +636,13 @@ def _compute_trader_stats(
     # Activity record types that REALIZE an open position by paying it out at
     # resolution (vs. selling it on the order book). Matched case-insensitively
     # against the same `type` field the BUY/SELL branch parses.
-    _REDEEM_TYPES = ("redeem", "claim", "reward")
+    _REDEEM_TYPES = ("redeem", "claim")
 
-    for item in activity:
+    ordered_activity = sorted(
+        activity,
+        key=lambda item: _parse_timestamp(item.get("timestamp", item.get("createdAt", 0))),
+    )
+    for item in ordered_activity:
         item_type = activity_type(item)
         is_redeem = item_type in _REDEEM_TYPES
         if not is_trade_activity(item) and not is_redeem:
@@ -648,6 +651,8 @@ def _compute_trader_stats(
         market_id = activity_market_id(item)
         token_id = activity_token_id(item)
         side = activity_side(item)
+        if not market_id or not token_id:
+            continue
 
         try:
             price = float(item.get("price", 0))
