@@ -1,3 +1,6 @@
+-c constraints.txt
+
+# BEGIN RUNTIME DEPENDENCIES
 py-clob-client>=0.34.0,<1.0
 aiohttp>=3.9.0,<4.0
 websockets>=12.0,<13.0
@@ -6,14 +9,16 @@ python-dotenv>=1.0.0,<2.0
 pydantic>=2.0.0,<3.0
 aiosqlite>=0.20.0,<1.0
 aiolimiter>=1.1.0,<2.0
+# END RUNTIME DEPENDENCIES
 
-# Test tooling is intentionally left UNBOUNDED. These are dev-only dependencies
-# (never shipped at runtime), so the "block unreviewed major bumps" rationale
-# above does not apply — and capping them blocks security patches: pytest's fix
-# for CVE-2025-71176 first ships in 9.0.3, which a `<9.0` cap would exclude.
+# BEGIN TEST DEPENDENCIES
+# Test requirements remain broad so security fixes are eligible. constraints.txt
+# records the reviewed Windows resolution used by install and audit commands;
+# refresh it whenever these ranges or the runtime requirements change.
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 hypothesis>=6.0.0  # property-based invariant pins in tests/test_invariants.py
+# END TEST DEPENDENCIES
 
 # Optional (M16): Prometheus metrics export. The bot degrades gracefully to
 # no-op metrics when this is absent (see core/metrics.py). Uncomment / install to
