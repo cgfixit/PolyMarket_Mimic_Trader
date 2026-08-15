@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify dependencies"
+  short_description: "Check manifests and Windows resolution"
+  default_prompt: "Use $verify-deps to verify dependency manifests and the Windows package resolution."

@@ -44,7 +44,9 @@ jobs:
           # Selective pip cache keyed on the exact requirements file so the
           # cache is invalidated whenever a dependency version changes.
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            constraints.txt
 
       - name: Install dependencies
         run: |
@@ -93,7 +95,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            constraints.txt
 
       - name: Install Ruff
         run: pip install ruff
@@ -114,7 +118,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            constraints.txt
 
       - name: Install dependencies
         run: |
@@ -141,7 +147,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            constraints.txt
 
       - name: Install pip-audit
         run: pip install pip-audit
