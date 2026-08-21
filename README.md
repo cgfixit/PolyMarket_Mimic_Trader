@@ -13,7 +13,7 @@ Only ~7.6% of Polymarket wallets are profitable, and academic research (Gómez-C
 Paper mode is the only supported runtime mode. `polymarket_copier.main::run_bot` fails closed for `--mode live` because this build uses unsupported Polymarket CLOB V1 orders. Do not fund a wallet or configure live credentials for this build.
 
 The remaining readiness discussion describes prerequisites for a future, separately reviewed live client; it is not a path to enable the current build. It still does **not** prove profitability outside paper mode.
-Official Polymarket docs currently recommend `py-clob-client-v2` and the deposit-wallet `signature_type=3` flow for new API users; this repo's live client still uses `py-clob-client>=0.34,<1.0`, so current-doc auth parity is not complete.
+Official Polymarket docs currently recommend the unified Python SDK `polymarket-client` (`from polymarket import …`) for new API work. `py-clob-client-v2` remains the previous-generation CLOB V2 client; this repo's unreachable live adapter still pins `py-clob-client>=0.34,<1.0` (CLOB V1), so current-doc auth parity is not complete. Deposit-wallet `signature_type=3` plus funder config exists here but does not make the V1 adapter compatible.
 
 Any future live client requires a venue-specific legal review, a held-out backtest with positive net expectancy after spread/slippage/fees/latency/no-fills, realistic paper/live execution reports from order-book snapshots, and a minimal-fund proof of the exact SDK/auth path. US/Georgia operators should treat the international CLOB endpoint as a venue mismatch, not a config problem.
 
