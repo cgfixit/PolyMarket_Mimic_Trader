@@ -505,7 +505,7 @@ class TradeMonitor:
 
                 if sleep > 0.001:
                     try:
-                        await asyncio.wait_for(asyncio.shield(self._stop_event.wait()), timeout=sleep)
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=sleep)
                         break  # stop_event was set
                     except asyncio.TimeoutError:
                         pass  # Normal — sleep elapsed, continue polling

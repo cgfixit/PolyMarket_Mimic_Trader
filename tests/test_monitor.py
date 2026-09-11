@@ -23,6 +23,39 @@ async def _noop_trade(event):
     return None
 
 
+class TestPollWaiterCleanup:
+    async def test_poll_timeouts_do_not_accumulate_stop_waiters(self, monkeypatch):
+        """Every elapsed poll interval must dispose of its event waiter."""
+
+        class CountedEvent(asyncio.Event):
+            active_waiters = 0
+
+            async def wait(self):
+                self.active_waiters += 1
+                try:
+                    return await super().wait()
+                finally:
+                    self.active_waiters -= 1
+
+        monitor = TradeMonitor(["0xabc"], _noop_trade, poll_interval=0.01, poll_jitter=0)
+        stop = CountedEvent()
+        monitor._stop_event = stop
+        counts = []
+
+        async def poll(session):
+            counts.append(stop.active_waiters)
+            if len(counts) == 3:
+                stop.set()
+
+        monkeypatch.setattr(monitor, "_poll_all_wallets", poll)
+        try:
+            await asyncio.wait_for(monitor._poll_loop(), timeout=1)
+            assert counts == [0, 0, 0]
+        finally:
+            stop.set()
+            await asyncio.sleep(0)
+
+
 class TestParseTradeEvent:
     def test_parse_buy(self):
         raw = {
