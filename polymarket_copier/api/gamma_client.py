@@ -52,6 +52,7 @@ class GammaClient:
                     timeout=aiohttp.ClientTimeout(total=10),
                     connector=aiohttp.TCPConnector(limit=_CONN_LIMIT, keepalive_timeout=_KEEPALIVE_TIMEOUT),
                 )
+                self._external_session = False
         return self._session
 
     async def close(self) -> None:

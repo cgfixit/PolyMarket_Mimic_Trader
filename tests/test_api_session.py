@@ -41,6 +41,33 @@ def _reset_counter():
     yield
 
 
+class TestSessionOwnership:
+    @pytest.mark.parametrize("client_factory", [GammaClient, DataClient])
+    async def test_replacement_for_closed_external_session_is_owned(self, client_factory):
+        """Internally created replacements must be closed by the client."""
+        import aiohttp
+
+        external = aiohttp.ClientSession()
+        client = client_factory(session=external)
+        try:
+            assert await client._get_session() is external
+            await client.close()
+            assert not external.closed
+        finally:
+            await external.close()
+
+        replacements = await asyncio.gather(*(client._get_session() for _ in range(25)))
+        replacement = replacements[0]
+        try:
+            assert all(session is replacement for session in replacements)
+            assert replacement is not external
+            assert not replacement.closed
+            await client.close()
+            assert replacement.closed
+        finally:
+            await replacement.close()
+
+
 @pytest.mark.parametrize("client_factory", [GammaClient, DataClient])
 @pytest.mark.asyncio
 async def test_concurrent_get_session_creates_single_session(client_factory):
