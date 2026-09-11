@@ -976,10 +976,20 @@ class TestStructuredEvents:
         return records, cleanup
 
     @pytest.mark.asyncio
-    async def test_position_opened_event_emitted(self, copier):
+    @pytest.mark.parametrize("detection_delay", [0.0, 10.0])
+    async def test_position_opened_event_emitted(self, copier, monkeypatch, detection_delay):
+        """Pin each latency to its own origin, including delayed event delivery."""
+        from dataclasses import replace
+
+        event = replace(buy_event(price=0.50, token="tok-a"), detected_at=100.0 - detection_delay)
+        ticks = iter([100.0, 101.0, 102.0, 103.0])
+        monkeypatch.setattr(
+            "polymarket_copier.core.copier.time",
+            SimpleNamespace(time=time.time, monotonic=lambda: next(ticks)),
+        )
         records, cleanup = self._capture_events()
         try:
-            await copier.handle_trade_event(buy_event(price=0.50, token="tok-a"))
+            await copier.handle_trade_event(event)
         finally:
             cleanup()
         opened = [r for r in records if r.get("event") == "position_opened"]
@@ -996,10 +1006,11 @@ class TestStructuredEvents:
         assert ev["order_submitted_at"] > 0
         assert ev["order_filled_at"] >= ev["order_submitted_at"]
         assert ev["wall_age_seconds"] >= 0
-        assert ev["detection_latency_seconds"] >= 0
-        assert ev["submit_latency_seconds"] >= 0
-        assert ev["fill_latency_seconds"] >= ev["submit_latency_seconds"]
-        assert ev["decision_latency_seconds"] >= ev["fill_latency_seconds"]
+        assert ev["detection_latency_seconds"] == detection_delay
+        assert ev["submit_latency_seconds"] == detection_delay + 1.0
+        assert ev["fill_latency_seconds"] == detection_delay + 2.0
+        # Decision duration starts at handler entry; the other durations start at detection.
+        assert ev["decision_latency_seconds"] == 3.0
 
     @pytest.mark.asyncio
     async def test_position_opened_event_uses_clob_fee_rate(self, copier, gamma):
