@@ -24,6 +24,19 @@ def _make_record(msg="hello %s", args=("world",), level=logging.INFO):
 
 
 class TestJsonFormatter:
+    def test_preserves_exception_traceback(self):
+        """JSON handlers must retain exception context supplied by logging callers."""
+        import sys
+
+        record = _make_record()
+        try:
+            raise ValueError("bad payload")
+        except ValueError:
+            record.exc_info = sys.exc_info()
+        parsed = json.loads(JsonFormatter().format(record))
+        assert "Traceback (most recent call last)" in parsed["exception"]
+        assert "ValueError: bad payload" in parsed["exception"]
+
     def test_emits_base_fields(self):
         out = JsonFormatter(datefmt="%Y-%m-%dT%H:%M:%S").format(_make_record())
         parsed = json.loads(out)
@@ -91,6 +104,16 @@ class TestSetupLogger:
 
 class TestLogEvent:
     """M17: log_event routes a structured payload through the JSON 'data' channel."""
+
+    def test_disabled_events_do_not_format_fields(self):
+        """Suppressed events must skip eager payload/message construction."""
+
+        class Unformattable:
+            def __str__(self):
+                raise AssertionError("disabled field was formatted")
+
+        logger = logging.Logger("disabled_event", level=logging.WARNING)
+        log_event(logger, "suppressed", value=Unformattable())
 
     def _capture(self):
         records: list[logging.LogRecord] = []
