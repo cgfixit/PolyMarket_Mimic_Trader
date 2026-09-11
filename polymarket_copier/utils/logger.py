@@ -19,6 +19,8 @@ class JsonFormatter(logging.Formatter):
         }
         if hasattr(record, "data"):
             log_entry["data"] = record.data
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_entry)
 
 
@@ -41,6 +43,8 @@ def log_event(
     only JSON-serializable primitives as field values; avoid the reserved names
     time/level/module/msg/data (they are owned by the formatter).
     """
+    if not logger.isEnabledFor(level):
+        return
     payload = {"event": event, **fields}
     if msg is None:
         kv = " ".join(f"{k}={v}" for k, v in fields.items())
