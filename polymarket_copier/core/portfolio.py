@@ -81,10 +81,15 @@ class PortfolioManager:
         """Open the SQLite connection, enable WAL mode, and create the schema if absent."""
         os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         self._db = await aiosqlite.connect(self._db_path)
-        await self._db.execute("PRAGMA journal_mode=WAL;")
-        await self._db.executescript(_SCHEMA)
-        await self._migrate()
-        await self._db.commit()
+        try:
+            await self._db.execute("PRAGMA journal_mode=WAL;")
+            await self._db.executescript(_SCHEMA)
+            await self._migrate()
+            await self._db.commit()
+        except BaseException:
+            # Cancellation during setup also leaves a live SQLite worker behind.
+            await self.close()
+            raise
         logger.info("Portfolio DB initialized: %s", self._db_path)
 
     async def _migrate(self) -> None:
@@ -110,6 +115,7 @@ class PortfolioManager:
         """Close the underlying SQLite connection if it is open."""
         if self._db:
             await self._db.close()
+            self._db = None
 
     def _require_db(self) -> aiosqlite.Connection:
         """Return the live connection or fail loudly if init() was never awaited.
