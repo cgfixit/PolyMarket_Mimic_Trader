@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from polymarket_copier.core.portfolio import PortfolioManager
@@ -35,6 +37,30 @@ async def make_position(rm, entry=0.50, market_id="mkt-a", size=100.0, trader="0
 
 
 class TestPortfolioManager:
+    @pytest.mark.parametrize("failure", [RuntimeError("migration failed"), asyncio.CancelledError()])
+    async def test_failed_init_closes_connection(self, tmp_path, monkeypatch, failure):
+        """An initialization error or cancellation must not leak the DB worker."""
+        pm = PortfolioManager(str(tmp_path / "failed-init.db"))
+        connection = None
+
+        async def fail_migration():
+            nonlocal connection
+            connection = pm._db
+            raise failure
+
+        monkeypatch.setattr(pm, "_migrate", fail_migration)
+        try:
+            with pytest.raises(type(failure)):
+                await pm.init()
+            assert connection is not None
+            with pytest.raises(ValueError, match="no active connection"):
+                await connection.execute("SELECT 1")
+            with pytest.raises(RuntimeError, match="not initialized"):
+                await pm.position_count()
+        finally:
+            if connection is not None:
+                await connection.close()
+
     @pytest.mark.asyncio
     async def test_open_and_count(self, portfolio, rm):
         pos = await make_position(rm)
