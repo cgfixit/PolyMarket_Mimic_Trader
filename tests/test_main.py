@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -209,3 +211,64 @@ class TestRiskConfigWiring:
 
     def test_drawdown_stop_dataclass_default_matches_pydantic_default(self):
         assert RiskConfig().drawdown_stop_pct == AppConfig().risk_management.drawdown_stop_pct
+
+
+class TestBotShutdown:
+    async def test_signal_joins_sibling_loops_before_closing_database(self, tmp_path, monkeypatch):
+        """Paper-mode shutdown must not leave loops using already-closed resources."""
+        monkeypatch.chdir(tmp_path)
+        config = AppConfig(mode="paper")
+        monkeypatch.setattr("polymarket_copier.main.load_config", lambda **_: config)
+        monkeypatch.setattr("polymarket_copier.main.setup_logger", lambda **_: MagicMock())
+        trader = SimpleNamespace(stats=SimpleNamespace(address="0xabc", win_rate=0.6, mean_pnl=0.1), score=1, rank=1)
+        tracker = MagicMock(top_traders=[trader])
+        tracker.refresh = AsyncMock(return_value=[trader])
+        tracker.top_wallet_addresses.return_value = ["0xabc"]
+        tracker.last_refresh.return_value = 0
+        monkeypatch.setattr("polymarket_copier.main.TrackerClient", lambda **_: tracker)
+        clob = MagicMock(preload_credentials=AsyncMock(), close=AsyncMock())
+        monkeypatch.setattr("polymarket_copier.main.ClobClient", lambda _: clob)
+        copier = MagicMock(rehydrate_position_cache=AsyncMock(), check_all_exits=AsyncMock())
+        monkeypatch.setattr("polymarket_copier.main.CopyTrader", lambda *args: copier)
+        stop = asyncio.Event()
+        signal_callback = None
+
+        def install(loop, callback):
+            nonlocal signal_callback
+            signal_callback = callback
+
+        async def monitor_run():
+            asyncio.get_running_loop().call_soon(signal_callback)
+            await stop.wait()
+            # Real TradeMonitor.stop cancels its child tasks; gather propagates this.
+            raise asyncio.CancelledError
+
+        monitor = MagicMock(run=monitor_run, stop=AsyncMock(side_effect=stop.set))
+        monkeypatch.setattr("polymarket_copier.main.TradeMonitor", lambda **_: monitor)
+        monkeypatch.setattr("polymarket_copier.main._install_shutdown_handlers", install)
+        pm = PortfolioManager(str(tmp_path / "shutdown.db"))
+        original_close = pm.close
+        baseline_tasks = asyncio.all_tasks()
+        pending_at_close = []
+
+        async def close():
+            pending_at_close.extend(
+                task.get_coro().__qualname__
+                for task in asyncio.all_tasks() - baseline_tasks
+                if task is not asyncio.current_task()
+            )
+            await original_close()
+
+        monkeypatch.setattr(pm, "close", close)
+        monkeypatch.setattr("polymarket_copier.main.PortfolioManager", lambda **_: pm)
+        try:
+            await asyncio.wait_for(run_bot(mode="paper"), timeout=1)
+            assert pending_at_close == []
+            clob.close.assert_awaited_once()
+            assert copier.check_all_exits.await_count == 1
+        finally:
+            remaining = asyncio.all_tasks() - baseline_tasks
+            for task in remaining:
+                task.cancel()
+            await asyncio.gather(*remaining, return_exceptions=True)
+            await original_close()
