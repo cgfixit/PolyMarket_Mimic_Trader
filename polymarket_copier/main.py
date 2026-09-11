@@ -322,8 +322,9 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
         await monitor.stop()
 
     logger.info("Starting bot...")
-    try:
-        await asyncio.gather(
+    tasks = [
+        asyncio.create_task(coro)
+        for coro in (
             supervise("monitor", lambda: monitor.run()),
             supervise("rebalance", rebalance_loop),
             supervise("exit_check", exit_check_loop),
@@ -331,9 +332,18 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
             heartbeat_watchdog(),
             shutdown_watcher(),
         )
+    ]
+    try:
+        await asyncio.gather(*tasks)
     except asyncio.CancelledError:
         pass
     finally:
+        shutdown_event.set()
+        # gather propagates a child cancellation without stopping its siblings.
+        # Join every loop before closing the database and API clients they use.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await monitor.stop()
         summary = await portfolio.summary()
         logger.info("\n%s", summary)
