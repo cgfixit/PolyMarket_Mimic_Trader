@@ -65,7 +65,7 @@ Then give a short `LEGAL RISK NOTE`:
 - what needs counsel
 
 If the verified source picture materially changes the repo's profitability or
-live-mode claims, update `PROFITABILITY_ANALYSIS_JUNE_2026.md` in the same run.
+live-mode claims, update `PROFITABILITY_ANALYSIS_2026.md` in the same run.
 Keep the update evidence-tagged: verified external fact, repo fact, inference,
 or open question.
 

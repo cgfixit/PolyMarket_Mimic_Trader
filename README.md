@@ -6,7 +6,7 @@ A Python copy-trading bot that monitors the most successful traders on [Polymark
 
 ## Why This Exists 
 
-Only ~7.6% of Polymarket wallets are profitable, and academic research (Gómez-Cram, Guo, Jensen & Kung, SSRN #6617059, Apr 2026) finds that the ~3% of accounts with genuine, persistent skill earn it largely by reacting to public news *faster* than the market — an edge tied to speed of execution, not just strategy, that a bot mirroring trades seconds later is not guaranteed to inherit. This bot identifies historically strong traders via risk-adjusted scoring (not raw PnL) and mirrors their entries with tighter, range-relative risk controls, but treat leaderboard rank as a *candidate filter*, not a proven, copyable edge — validate with paper mode and your own measurement before risking real capital. See `PROFITABILITY_ANALYSIS_JUNE_2026.md` for a full analysis.
+Only ~7.6% of Polymarket wallets are profitable, and academic research (Gómez-Cram, Guo, Jensen & Kung, SSRN #6617059, Apr 2026) finds that the ~3% of accounts with genuine, persistent skill earn it largely by reacting to public news *faster* than the market — an edge tied to speed of execution, not just strategy, that a bot mirroring trades seconds later is not guaranteed to inherit. This bot identifies historically strong traders via risk-adjusted scoring (not raw PnL) and mirrors their entries with tighter, range-relative risk controls, but treat leaderboard rank as a *candidate filter*, not a proven, copyable edge — validate with paper mode and your own measurement before risking real capital. See `PROFITABILITY_ANALYSIS_2026.md` for a full analysis.
 
 ## Real-Money Status
 
@@ -67,7 +67,7 @@ Traders are ranked by the weighted sum `(4.0 * Sharpe_proxy + 3.5 * Consistency 
 
 ### Fractional Kelly Sizing (opt-in, off by default)
 
-Position sizes default to a flat 50% of source size (`size_multiplier`), capped at 2% of bankroll per trade. Setting `kelly_enabled: true` in `config.yaml` switches sizing to fractional Kelly. Once a trader has at least `kelly_min_trades` bot-closed trades, sizing uses that trader's observed portfolio win rate. Before that sample exists, `kelly_seed_from_tracker: true` can seed from tracker mean ROI with time decay. Kelly is off by default because both paths inherit measurement bias (see `PROFITABILITY_ANALYSIS_JUNE_2026.md` §4.2–4.3); the 2% hard cap bounds the damage either way.
+Position sizes default to a flat 50% of source size (`size_multiplier`), capped at 2% of bankroll per trade. Setting `kelly_enabled: true` in `config.yaml` switches sizing to fractional Kelly. Once a trader has at least `kelly_min_trades` bot-closed trades, sizing uses that trader's observed portfolio win rate. Before that sample exists, `kelly_seed_from_tracker: true` can seed from tracker mean ROI with time decay. Kelly is off by default because both paths inherit measurement bias (see `PROFITABILITY_ANALYSIS_2026.md`, Trader scoring and Kelly bias); the 2% hard cap bounds the damage either way.
 
 ### WebSocket + REST Hybrid Monitor
 
