@@ -336,7 +336,10 @@ async def run_bot(config_path: Optional[str] = None, mode: Optional[Literal["pap
     try:
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
-        pass
+        # Expected when a sibling loop is cancelled (e.g. TradeMonitor.stop).
+        # Swallow so cleanup in `finally` still runs and run_bot returns cleanly;
+        # re-raising would look like a crash after a normal paper-mode stop.
+        logger.debug("Background loops cancelled; proceeding to shutdown cleanup", exc_info=True)
     finally:
         shutdown_event.set()
         # gather propagates a child cancellation without stopping its siblings.
