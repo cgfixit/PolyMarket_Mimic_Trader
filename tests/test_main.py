@@ -219,7 +219,8 @@ class TestBotShutdown:
         monkeypatch.chdir(tmp_path)
         config = AppConfig(mode="paper")
         monkeypatch.setattr("polymarket_copier.main.load_config", lambda **_: config)
-        monkeypatch.setattr("polymarket_copier.main.setup_logger", lambda **_: MagicMock())
+        mock_logger = MagicMock()
+        monkeypatch.setattr("polymarket_copier.main.setup_logger", lambda **_: mock_logger)
         trader = SimpleNamespace(stats=SimpleNamespace(address="0xabc", win_rate=0.6, mean_pnl=0.1), score=1, rank=1)
         tracker = MagicMock(top_traders=[trader])
         tracker.refresh = AsyncMock(return_value=[trader])
@@ -266,6 +267,9 @@ class TestBotShutdown:
             assert pending_at_close == []
             clob.close.assert_awaited_once()
             assert copier.check_all_exits.await_count == 1
+            # Code-scanning #25: gather-level CancelledError must be logged, not bare-pass.
+            mock_logger.debug.assert_called()
+            assert mock_logger.debug.call_args.kwargs.get("exc_info") is True
         finally:
             remaining = asyncio.all_tasks() - baseline_tasks
             for task in remaining:
