@@ -5,7 +5,7 @@ description: >
   code check (file::symbol anchor) and an external check (URL + access date), and emit the
   repo-standard verdict table. Use when asked to fact-check, verify claims, audit a PR or doc,
   or reassess real-money readiness. Argument: a PR number (e.g. "77"), a file path
-  (e.g. "docs/PROFITABILITY_ANALYSIS_JUNE_2026.md"), or "readiness".
+  (e.g. "PROFITABILITY_ANALYSIS_2026.md"), or "readiness".
 ---
 
 # /fact-check — Claims Ledger
