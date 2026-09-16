@@ -3,7 +3,7 @@
 Formerly `PROFITABILITY_ANALYSIS_JUNE_2026.md`.
 
 **Original analysis updated:** 2026-07-20
-**Repo snapshot rechecked:** 2026-09-11, `origin/main` at `d603c16` (PR #149). Prior rechecks: 2026-08-21 at `13b6563` / `de8eaf8` (PR #143); 2026-08-08 at `24321e8`.
+**Repo snapshot rechecked:** 2026-09-15, `origin/main` at `5bb13afe294fb55d309b5c1e8348fa7d67fe9239`. Prior rechecks: 2026-09-11 at `d603c16` (PR #149); 2026-08-21 at `13b6563` / `de8eaf8` (PR #143); 2026-08-08 at `24321e8`.
 
 ## Verdict
 
@@ -12,6 +12,15 @@ Formerly `PROFITABILITY_ANALYSIS_JUNE_2026.md`.
 The 2026-09-11 `origin/main` tree is a better paper runtime than the August recheck: shutdown now joins background loops before closing SQLite and API clients, replacement Data/Gamma sessions are owned, timed-out poll waiters are released, portfolio init failures close the connection, and copier latency tests compare clocks that actually match the metrics. Those changes improve evidence quality. They do **not** prove the strategy is profitable, and they do **not** make the targeted international CLOB a legal or practical real-money venue for a US or Georgia-based operator.
 
 Live mode still fails closed before order-session creation while the client remains on unsupported CLOB V1. Official new-project Python is still unified `polymarket-client`. Data API v2 shipped 2026-09-04; this tree still reads frozen v1 `/v1/leaderboard` and legacy `/activity`.
+
+## 2026-09-15 R1 First Slice
+
+**Source:** `225dfc217407678e631ba19945bcdb869289a1f7` on `cx/r1-heldout-paper-replay`, based on the `origin/main` snapshot above. This is paper-only research code; it does not enter `main.py`, create an order client, or change trading/risk configuration.
+
+- **[verified branch fact]** `polymarket_copier/replay.py::build_heldout_report` scores the recorded v1 all-time/recent leaderboard intersection through `tracker.py::TraderScorer`, derives v1 activity statistics through `_compute_trader_stats`, and rejects a held-out event at or before `training_end_timestamp`.
+- **[verified branch fact]** Known filled and partial-filled records use `clob_client.py::gross_buy_fill_price` / `net_sell_fill_price`; skipped and no-fill records contribute zero realized PnL; `unknown_fill` records remain separately counted and are excluded from the net-expectancy denominator.
+- **[measured fixture result]** `pytest tests/test_heldout_replay.py -q` passed 3 tests locally on 2026-09-15. `python -m polymarket_copier.replay tests/fixtures/r1_heldout_v1.json` rendered 1 full fill, 1 partial fill, 1 no-fill, 2 skips, and 1 unknown fill; its synthetic fixture result was `$25.454230` net PnL and `$5.090846` per known decision. This verifies evaluator accounting only, not market performance.
+- **[unknown]** The repository still lacks captured real source activity paired with decision-time quotes, orders, and historical depth. This first slice consumes a captured-decision schema rather than re-implementing the async `CopyTrader` gate chain; R2/R4 remain required before treating results as execution evidence.
 
 ## Current-Source Recheck (2026-09-11)
 
