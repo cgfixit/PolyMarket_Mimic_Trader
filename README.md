@@ -279,9 +279,18 @@ When `metrics_enabled: true` in `config.yaml`, a Prometheus scrape endpoint is e
 
 Structured JSON log events are emitted on the `data` logger channel for downstream analysis:
 - `position_opened`, `position_closed` — entry/exit with price, size, PnL
-- `copy_skipped` — every skipped copy with a stable reason code
+- `copy_skipped` — every skipped copy with a stable reason code and comparable source age/decision timing
 - `circuit_breaker_tripped` — daily loss limit hit
 - `trader_demoted` — trader excluded from Kelly priors when the Wilson upper bound on copy win-rate falls below the configured minimum; tracker refresh can still re-add it to active tracking (DD-09)
+
+For a paper-run decision summary, use the stdlib-only report against one or more JSON log files:
+
+```bash
+python scripts/paper_metrics_report.py trades.log
+```
+
+It reports opened/skipped decisions, breaker trips, skip reasons, and the wall-age CDF. It deliberately labels
+synthetic paper fills as non-execution-adjusted evidence.
 
 ## Disclaimer
 

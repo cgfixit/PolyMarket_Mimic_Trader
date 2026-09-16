@@ -232,6 +232,21 @@ class CopyTrader:
         # wall_age: wall-clock age of the underlying on-chain trade
         wall_age = time.time() - event.timestamp
 
+        def decision_fields() -> dict[str, Any]:
+            """Return the common join keys and timing for one BUY decision."""
+            return {
+                "mode": self.config.mode,
+                "event_id": event.event_id,
+                "source_timestamp": event.timestamp,
+                "detected_at": round(event.detected_at, 6),
+                "wall_age_seconds": round(wall_age, 6),
+                "detection_latency_seconds": round(detection_latency, 6),
+                "decision_latency_seconds": round(time.monotonic() - decision_start, 6),
+            }
+
+        def record_skip(reason: str, **detail) -> None:
+            self._record_skip(reason, event, **decision_fields(), **detail)
+
         logger.info(
             "Trade event from %s: %s $%.2f @ %.4f on %s | wall_age=%.2fs detect_latency=%.3fs",
             event.wallet_address[:10],
@@ -271,8 +286,9 @@ class CopyTrader:
                 unrealized_pnl=round(unrealized, 4),
                 trader=event.wallet_address,
                 market_id=event.market_id,
+                **decision_fields(),
             )
-            metrics.COPIES_SKIPPED.labels(reason="trading_halted").inc()
+            record_skip("trading_halted")
             return
 
         # 2b. Staleness gate. After this many seconds the source's alpha has
@@ -284,11 +300,11 @@ class CopyTrader:
             # (treat as fresh), >3600 means definitely stale regardless of config.
             if wall_age > 3600:
                 logger.info("Skip: trade is %.1fs old (>1h, always stale)", wall_age)
-                self._record_skip("stale_trade", event, wall_age=round(wall_age, 1))
+                record_skip("stale_trade", wall_age=round(wall_age, 1))
                 return
             if wall_age > 0 and wall_age > max_age:
                 logger.info("Skip: trade is %.1fs old > max %.1fs", wall_age, max_age)
-                self._record_skip("stale_trade", event, wall_age=round(wall_age, 1))
+                record_skip("stale_trade", wall_age=round(wall_age, 1))
                 return
 
         # 3+4. Fetch market metadata and current price in parallel — both are
@@ -303,7 +319,7 @@ class CopyTrader:
         # 3. Resolution blackout. Fail CLOSED if market metadata is unavailable.
         if market is None and self.config.risk_management.fail_closed_on_missing_data:
             logger.info("Skip: market data unavailable for %s (fail-closed)", event.market_id[:10])
-            self._record_skip("missing_market_data", event)
+            record_skip("missing_market_data")
             return
         if market and (
             not market.active
@@ -314,9 +330,8 @@ class CopyTrader:
             or not market.enable_order_book
         ):
             logger.info("Skip: market %s is not tradable", event.market_id[:10])
-            self._record_skip(
+            record_skip(
                 "market_not_tradable",
-                event,
                 active=market.active,
                 closed=market.closed,
                 archived=market.archived,
@@ -330,7 +345,7 @@ class CopyTrader:
             hours_to_resolve = (market.resolve_time.timestamp() - time.time()) / 3600
             if 0 < hours_to_resolve < blackout_hours:
                 logger.info("Skip: market resolves in %.1fh (blackout)", hours_to_resolve)
-                self._record_skip("resolution_blackout", event, hours_to_resolve=round(hours_to_resolve, 1))
+                record_skip("resolution_blackout", hours_to_resolve=round(hours_to_resolve, 1))
                 return
 
         # H8: Validate the token is a recognized outcome for this market.
@@ -343,7 +358,7 @@ class CopyTrader:
                     event.token_id[:10],
                     event.market_id[:10],
                 )
-                self._record_skip("unrecognized_token", event)
+                record_skip("unrecognized_token")
                 return
 
         # 4. Price deviation check. Fail CLOSED if the current price is unknown.
@@ -351,7 +366,7 @@ class CopyTrader:
         if current_price is None:
             if self.config.risk_management.fail_closed_on_missing_data:
                 logger.info("Skip: current price unavailable for token %s (fail-closed)", event.token_id[:10])
-                self._record_skip("missing_price", event)
+                record_skip("missing_price")
                 return
             current_price = event.price
             price_fell_back_to_event = True
@@ -373,9 +388,8 @@ class CopyTrader:
                     event.price,
                     ct.max_price_deviation * 100,
                 )
-                self._record_skip(
+                record_skip(
                     "adverse_price_move",
-                    event,
                     deviation_pct=round(signed_dev * 100, 2),
                     current_price=current_price,
                     whale_price=event.price,
@@ -386,9 +400,8 @@ class CopyTrader:
                     "Skip: price collapsed %.1f%% below whale entry (likely adverse news)",
                     abs(signed_dev) * 100,
                 )
-                self._record_skip(
+                record_skip(
                     "favorable_collapse",
-                    event,
                     deviation_pct=round(signed_dev * 100, 2),
                     current_price=current_price,
                     whale_price=event.price,
@@ -405,7 +418,7 @@ class CopyTrader:
                 ct.min_entry_price,
                 ct.max_entry_price,
             )
-            self._record_skip("entry_price_band", event, current_price=current_price)
+            record_skip("entry_price_band", current_price=current_price)
             return
 
         # 5. Market volume check.
@@ -415,7 +428,7 @@ class CopyTrader:
                 market.volume_24h,
                 self.config.copy_trading.min_market_volume,
             )
-            self._record_skip("low_volume", event, volume_24h=market.volume_24h)
+            record_skip("low_volume", volume_24h=market.volume_24h)
             return
 
         # 6. Compute conservative copy size.
@@ -475,7 +488,7 @@ class CopyTrader:
         copy_size_usdc = min(copy_size_usdc, max_cap_usdc)
 
         if copy_size_usdc <= 0 or current_price <= 0:
-            self._record_skip("zero_size", event, copy_size_usdc=round(copy_size_usdc, 4))
+            record_skip("zero_size", copy_size_usdc=round(copy_size_usdc, 4))
             return
 
         # 4c. H5/PR2: pre-copy edge check — use price-shaped taker fees and the
@@ -492,9 +505,8 @@ class CopyTrader:
                 fee_rate,
                 fee_source,
             )
-            self._record_skip(
+            record_skip(
                 "post_fee_edge",
-                event,
                 tp_estimate=round(tp_estimate, 4),
                 entry_gross=round(expected_entry, 4),
                 tp_net=round(expected_exit, 4),
@@ -515,7 +527,7 @@ class CopyTrader:
             current_price2 = await self.gamma.get_market_price(event.token_id)
             if current_price2 is None:
                 logger.info("Skip: price unavailable during edge revalidation")
-                self._record_skip("missing_price", event)
+                record_skip("missing_price")
                 return
             if current_price > 0:
                 adverse_move = (current_price2 - current_price) / current_price
@@ -525,9 +537,8 @@ class CopyTrader:
                         adverse_move * 100,
                         ct.max_price_deviation * 100,
                     )
-                    self._record_skip(
+                    record_skip(
                         "edge_revalidation",
-                        event,
                         revalidation_move_pct=round(adverse_move * 100, 2),
                         old_price=current_price,
                         new_price=current_price2,
@@ -550,14 +561,14 @@ class CopyTrader:
             position_count = await self.portfolio.position_count()
             if position_count + self._pending_entries >= ct.max_concurrent_positions:
                 logger.info("Skip: max concurrent positions reached (%d)", ct.max_concurrent_positions)
-                self._record_skip("max_positions", event)
+                record_skip("max_positions")
                 return
 
             # 7b. Per-token cap using the in-memory cache + pending entry already in cache.
             same_token = len(self._pos_cache.get(event.token_id, []))
             if ct.max_positions_per_token > 0 and same_token >= ct.max_positions_per_token:
                 logger.info("Skip: already holding %d positions on token %s", same_token, event.token_id[:10])
-                self._record_skip("duplicate_market", event)
+                record_skip("duplicate_market")
                 return
 
             try:
@@ -572,7 +583,7 @@ class CopyTrader:
                 )
             except ExposureCapError as e:
                 logger.info("Skip: exposure cap — %s", e)
-                self._record_skip("exposure_cap", event)
+                record_skip("exposure_cap")
                 return
 
             # H11+H12: add to cache inside the lock so a concurrent entry for the same
@@ -623,14 +634,14 @@ class CopyTrader:
                 self._remove_pos_from_cache(pos)
                 await self.risk.release_exposure(pos.market_id, pos.entry_price * pos.size_shares, pos.trader_address)
                 metrics.EXPOSURE_RELEASED.labels(cause="insufficient_liquidity").inc()
-                self._record_skip("insufficient_liquidity", event)
+                record_skip("insufficient_liquidity")
                 return
             except Exception as e:
                 logger.error("Order placement failed: %s", e)
                 self._remove_pos_from_cache(pos)
                 await self.risk.release_exposure(pos.market_id, pos.entry_price * pos.size_shares, pos.trader_address)
                 metrics.EXPOSURE_RELEASED.labels(cause="order_failed").inc()
-                self._record_skip("order_failed", event)
+                record_skip("order_failed")
                 return
 
             # 10b. Reconcile against the ACTUAL fill.  In live trading an order can
@@ -653,7 +664,7 @@ class CopyTrader:
                     registered_notional,
                     event.market_id[:10],
                 )
-                self._record_skip("no_fill", event, registered_notional=round(registered_notional, 2))
+                record_skip("no_fill", registered_notional=round(registered_notional, 2))
                 return
 
             if filled_shares < size_shares and not math.isclose(filled_shares, size_shares, rel_tol=1e-6):

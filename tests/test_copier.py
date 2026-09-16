@@ -1059,6 +1059,12 @@ class TestStructuredEvents:
         skips = [r for r in records if r.get("event") == "copy_skipped"]
         assert skips and skips[0]["reason"] == "low_volume"
         assert skips[0]["trader"] == "0xwhale"
+        assert skips[0]["mode"] == "paper"
+        assert skips[0]["event_id"]
+        assert skips[0]["source_timestamp"] > 0
+        assert skips[0]["wall_age_seconds"] >= 0
+        assert skips[0]["detection_latency_seconds"] >= 0
+        assert skips[0]["decision_latency_seconds"] >= 0
 
     @pytest.mark.asyncio
     async def test_position_closed_event_emitted_on_exit(self, copier):
@@ -1089,6 +1095,11 @@ class TestStructuredEvents:
             cleanup()
         cb = [r for r in records if r.get("event") == "circuit_breaker_tripped"]
         assert cb, "expected a circuit_breaker_tripped event"
+        skips = [r for r in records if r.get("event") == "copy_skipped"]
+        assert len(skips) == 1
+        assert skips[0]["reason"] == "trading_halted"
+        assert cb[0]["event_id"] == skips[0]["event_id"]
+        assert cb[0]["wall_age_seconds"] == skips[0]["wall_age_seconds"]
         assert await copier.portfolio.position_count() == 0
 
 
