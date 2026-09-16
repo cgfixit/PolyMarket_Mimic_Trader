@@ -218,6 +218,22 @@ The test suite includes:
 - **Chaos tests** — network errors, API 429/500s, malformed data, concurrent exits, WS death + recovery
 - All tests run offline with mocked API responses
 
+### Held-Out Replay (R1 First Slice)
+
+The paper-only replay evaluator scores a recorded v1 leaderboard/activity training window with the
+current `TraderScorer`, then summarizes a strictly later captured decision trace. It reuses the
+price-shaped fee and slippage functions for known fills, counts skips and no-fills as zero realized
+outcome, and excludes unknown fills from net-expectancy arithmetic.
+
+```bash
+python -m polymarket_copier.replay tests/fixtures/r1_heldout_v1.json
+```
+
+The bundled fixture is synthetic and tests evaluator behavior only. It is not historical market
+data, an order-book replay, or evidence of profitability. A production study needs captured source
+activity and decision-time outcomes with no training/hold-out overlap; see
+`PROFITABILITY_ANALYSIS_2026.md`.
+
 ## Architecture
 
 ### Data Flow
