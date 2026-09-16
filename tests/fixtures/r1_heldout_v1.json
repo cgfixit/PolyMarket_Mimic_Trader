@@ -1,0 +1,37 @@
+{
+  "training_end_timestamp": 1700000100,
+  "scorer_config": {
+    "min_total_pnl": 1000.0,
+    "min_trade_count": 1,
+    "min_expectancy": 0.01,
+    "max_top_traders": 1
+  },
+  "leaderboard": {
+    "all": [
+      {"proxyWallet": "0xalpha", "userName": "Alpha", "pnl": 5000.0},
+      {"proxyWallet": "0xbeta", "userName": "Beta", "pnl": 4000.0}
+    ],
+    "recent": [
+      {"proxyWallet": "0xalpha", "userName": "Alpha", "pnl": 5000.0},
+      {"proxyWallet": "0xbeta", "userName": "Beta", "pnl": 4000.0}
+    ]
+  },
+  "activity_by_wallet": {
+    "0xalpha": [
+      {"id": "alpha-buy", "type": "TRADE", "side": "BUY", "market": "market-a", "asset": "token-a", "price": 0.50, "usdcSize": 100.0, "timestamp": 1700000000},
+      {"id": "alpha-sell", "type": "TRADE", "side": "SELL", "market": "market-a", "asset": "token-a", "price": 0.75, "usdcSize": 150.0, "timestamp": 1700000050}
+    ],
+    "0xbeta": [
+      {"id": "beta-buy", "type": "TRADE", "side": "BUY", "market": "market-b", "asset": "token-b", "price": 0.50, "usdcSize": 100.0, "timestamp": 1700000000},
+      {"id": "beta-sell", "type": "TRADE", "side": "SELL", "market": "market-b", "asset": "token-b", "price": 0.55, "usdcSize": 110.0, "timestamp": 1700000050}
+    ]
+  },
+  "heldout": [
+    {"event_id": "filled", "wallet": "0xalpha", "source_timestamp": 1700000200, "outcome": "filled", "copy_size_usdc": 100.0, "entry_quote_price": 0.50, "exit_quote_price": 0.60, "fee_rate": 0.02, "entry_slippage_pct": 0.01, "exit_slippage_pct": 0.01},
+    {"event_id": "partial", "wallet": "0xalpha", "source_timestamp": 1700000300, "outcome": "partial_fill", "fill_fraction": 0.50, "copy_size_usdc": 100.0, "entry_quote_price": 0.40, "exit_quote_price": 0.50, "fee_rate": 0.02, "entry_slippage_pct": 0.01, "exit_slippage_pct": 0.01},
+    {"event_id": "no-fill", "wallet": "0xalpha", "source_timestamp": 1700000400, "outcome": "no_fill"},
+    {"event_id": "unknown", "wallet": "0xalpha", "source_timestamp": 1700000500, "outcome": "unknown_fill"},
+    {"event_id": "stale", "wallet": "0xalpha", "source_timestamp": 1700000600, "outcome": "skipped", "skip_reason": "stale_trade"},
+    {"event_id": "unselected", "wallet": "0xbeta", "source_timestamp": 1700000700, "outcome": "filled", "copy_size_usdc": 100.0, "entry_quote_price": 0.50, "exit_quote_price": 0.90, "fee_rate": 0.02, "entry_slippage_pct": 0.01, "exit_slippage_pct": 0.01}
+  ]
+}
