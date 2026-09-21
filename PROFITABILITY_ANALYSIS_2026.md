@@ -3,24 +3,32 @@
 Formerly `PROFITABILITY_ANALYSIS_JUNE_2026.md`.
 
 **Original analysis updated:** 2026-07-20
-**Repo snapshot rechecked:** 2026-09-15, `origin/main` at `5bb13afe294fb55d309b5c1e8348fa7d67fe9239`. Prior rechecks: 2026-09-11 at `d603c16` (PR #149); 2026-08-21 at `13b6563` / `de8eaf8` (PR #143); 2026-08-08 at `24321e8`.
+**Repo snapshot rechecked:** 2026-09-21, `origin/main` at `120d7893cb6417a93da6f9fbd8f6a746a05f688b`. Prior rechecks: 2026-09-15 at `5bb13af`; 2026-09-11 at `d603c16` (PR #149); 2026-08-21 at `13b6563` / `de8eaf8` (PR #143); 2026-08-08 at `24321e8`.
 
 ## Verdict
 
 **Still conditional NO for non-paper real-money mode.**
 
-The 2026-09-11 `origin/main` tree is a better paper runtime than the August recheck: shutdown now joins background loops before closing SQLite and API clients, replacement Data/Gamma sessions are owned, timed-out poll waiters are released, portfolio init failures close the connection, and copier latency tests compare clocks that actually match the metrics. Those changes improve evidence quality. They do **not** prove the strategy is profitable, and they do **not** make the targeted international CLOB a legal or practical real-money venue for a US or Georgia-based operator.
+The current `origin/main` tree is a better paper research runtime than the August recheck: in addition to the September runtime-hygiene fixes, it now has a paper decision summary and a held-out replay evaluator. Those additions improve evidence collection and evaluator correctness. They do **not** prove the strategy is profitable, and they do **not** make the targeted international CLOB a legal or practical real-money venue for a US or Georgia-based operator.
 
 Live mode still fails closed before order-session creation while the client remains on unsupported CLOB V1. Official new-project Python is still unified `polymarket-client`. Data API v2 shipped 2026-09-04; this tree still reads frozen v1 `/v1/leaderboard` and legacy `/activity`.
 
 ## 2026-09-15 R1 First Slice
 
-**Source:** `225dfc217407678e631ba19945bcdb869289a1f7` on `cx/r1-heldout-paper-replay`, based on the `origin/main` snapshot above. This is paper-only research code; it does not enter `main.py`, create an order client, or change trading/risk configuration.
+**Source:** merged on `origin/main` as `75d33e48b05c8d266d52fe43d804a9c3bff6cb05`. This is paper-only research code; it does not enter `main.py`, create an order client, or change trading/risk configuration.
 
-- **[verified branch fact]** `polymarket_copier/replay.py::build_heldout_report` scores the recorded v1 all-time/recent leaderboard intersection through `tracker.py::TraderScorer`, derives v1 activity statistics through `_compute_trader_stats`, and rejects a held-out event at or before `training_end_timestamp`.
-- **[verified branch fact]** Known filled and partial-filled records use `clob_client.py::gross_buy_fill_price` / `net_sell_fill_price`; skipped and no-fill records contribute zero realized PnL; `unknown_fill` records remain separately counted and are excluded from the net-expectancy denominator.
+- **[verified repo fact]** `polymarket_copier/replay.py::build_heldout_report` scores the recorded v1 all-time/recent leaderboard intersection through `tracker.py::TraderScorer`, derives v1 activity statistics through `_compute_trader_stats`, and rejects a held-out event at or before `training_end_timestamp`.
+- **[verified repo fact]** Known filled and partial-filled records use `clob_client.py::gross_buy_fill_price` / `net_sell_fill_price`; skipped and no-fill records contribute zero realized PnL; `unknown_fill` records remain separately counted and are excluded from the net-expectancy denominator.
 - **[measured fixture result]** `pytest tests/test_heldout_replay.py -q` passed 3 tests locally on 2026-09-15. `python -m polymarket_copier.replay tests/fixtures/r1_heldout_v1.json` rendered 1 full fill, 1 partial fill, 1 no-fill, 2 skips, and 1 unknown fill; its synthetic fixture result was `$25.454230` net PnL and `$5.090846` per known decision. This verifies evaluator accounting only, not market performance.
 - **[unknown]** The repository still lacks captured real source activity paired with decision-time quotes, orders, and historical depth. This first slice consumes a captured-decision schema rather than re-implementing the async `CopyTrader` gate chain; R2/R4 remain required before treating results as execution evidence.
+
+## 2026-09-15 R2 First Slice
+
+**Source:** merged on `origin/main` as `6db5fef3830fe2c0d5c9c2e75a826a1d3c1b234c`. This is paper-only observability; it does not change order placement, fill reconciliation, or risk configuration.
+
+- **[verified repo fact]** `copier.py::CopyTrader.handle_trade_event` emits stable event and timing fields for BUY decisions and skips; opened positions also include source, quoted, and fill prices, fee metadata, size, and submit/fill timestamps.
+- **[verified repo fact]** `scripts/paper_metrics_report.py::summarize` reports paper opens/skips, breaker trips, skip reasons, and wall-age distribution while ignoring non-paper records.
+- **[evidence boundary]** The report does not join decision-time book depth, spread, VWAP, fee, authoritative order/trade status, or realized PnL. It labels synthetic paper fills as non-execution-adjusted evidence and is not an execution-parity or profitability report.
 
 ## Current-Source Recheck (2026-09-11)
 
@@ -49,6 +57,7 @@ Live mode still fails closed before order-session creation while the client rema
 - Tracker activity is normalized chronologically before FIFO matching. `REWARD` and current blank-asset redemption rows are excluded from directional scoring; legacy token-attributed claims still use the documented $1 payout assumption.
 - Re-added wallets must seed a fresh cold-start baseline before emitting trades.
 - **2026-09-11 runtime hygiene (not expectancy proof):** timed-out monitor poll waiters are released (PR #145); internally created replacement Data/Gamma sessions are closed (PR #146); disabled log events are skipped and exception context is retained (PR #147); portfolio init failures close SQLite (PR #148); `run_bot` cancels and joins background loops before closing the database and API clients (PR #149).
+- **2026-09-15 paper evidence slices (not profitability proof):** paper BUY decisions expose joinable timing and skip fields plus a stdlib summary (`6db5fef`); the held-out evaluator enforces time separation and explicit unknown-fill accounting (`75d33e4`).
 
 ## 2026-08-08 FINDINGS SUMMARY
 
@@ -88,8 +97,8 @@ Live mode still fails closed before order-session creation while the client rema
 ## Why Real-Money Mode Is Still Blocked
 
 1. **Venue and legal mismatch.** The code targets the international crypto CLOB, whose official geoblock lists the United States as close-only on both the frontend and API, prohibiting new orders from US IP space. Polymarket US is a separate CFTC-designated venue with a separate API, but this repo has no adapter for it. The geoblock preflight is a safety check, not permission to trade.
-2. **No profitability proof.** There is still no held-out offline backtest that measures selected traders forward, net of spread, slippage, taker fees, latency, skipped fills, no-fills, and market impact.
-3. **Paper mode is not a go-live signal.** Paper mode is useful for plumbing and telemetry, but it still cannot prove live fill quality, partial/no-fill selection bias, or thin-book market impact. 2026-09-11 shutdown and session fixes do not close this gap.
+2. **No profitability proof.** The held-out evaluator has only a synthetic captured-decision fixture. There is still no real-data study that measures selected traders forward, net of spread, slippage, taker fees, latency, skipped fills, no-fills, and market impact.
+3. **Paper mode is not a go-live signal.** Paper mode is useful for plumbing and telemetry, and its report now summarizes decisions, skip reasons, and timing. It still cannot prove live fill quality, partial/no-fill selection bias, or thin-book market impact.
 4. **The copied signal is delayed and public.** The bot copies after public activity appears. Skilled Polymarket traders appear to earn much of their edge by reacting first; a delayed copier may buy after the source trade has already moved the book.
 5. **Trader metrics remain incomplete.** `REWARD` and current blank-asset redemptions are now excluded from directional scoring. Legacy token-attributed claims still assume a $1 payout when price is absent, and worthless-expiry losses or unredeemed outcomes can be missing, so historical ROI/win-rate inputs remain incomplete.
 6. **Live fill accounting is optimistic when the venue response is incomplete.** `_reconcile_fill` defaults missing fill fields to a full fill at the current quote (open DD-10). Any future live path must obtain authoritative order/trade state or keep the result unknown; it must not manufacture a position, exposure release, or PnL.
@@ -115,7 +124,7 @@ This is the section README points at. It is not a profitability proof.
 
 - **[verified repo fact]** Trader score is the weighted **sum** `(4.0 · sharpe + 3.5 · consistency + 2.5 · recency) / 10` in `tracker.py::TraderScorer.score`, not a product and not raw PnL. Dual-window rank (all-time and trailing 30-day) is an eligibility filter. Expectancy gates eligibility; a low win rate alone does not.
 - **[verified repo fact]** Default copy size is `size_multiplier` 0.5 of the source, hard-capped at `max_trade_pct` 0.02 of bankroll (`config.py`). `kelly_enabled` defaults **false**. When enabled, sizing uses the bot's own closed-trade win rate after `kelly_min_trades` (50); before that sample, `kelly_seed_from_tracker` (default true) can seed from tracker mean ROI with time decay.
-- **[inference]** Both Kelly paths inherit measurement bias from incomplete realizations (missing worthless expiries, legacy $1-redemption assumption, delayed public fills). The 2% cap bounds the damage; it does not create edge. Leave Kelly off until R1/R3 exist.
+- **[inference]** Both Kelly paths inherit measurement bias from incomplete realizations (missing worthless expiries, legacy $1-redemption assumption, delayed public fills). The 2% cap bounds the damage; it does not create edge. Leave Kelly off until R1 has real captured evidence and R3 exists.
 - **[unknown]** No held-out measurement in this repo shows that the scored wallets remain profitable after this bot's skip rules, fees, and latency.
 
 ## What to do next, and how
@@ -132,24 +141,23 @@ IDs match `next_steps.md`. Nothing below authorizes live mode. Do not silently f
 2. Venue-specific counsel for operator location, automation, and funding path. Geoblock passing is not permission.
 3. Do not start R5 until this is written. Engineering default until then: paper only.
 
-### 2. R1 — Offline backtest harness (highest-value code next)
+### 2. R1 — Held-out evaluator continuation (highest-value evidence next)
 
-**Why:** Only this can falsify “copying scored wallets has positive net expectancy.” Plumbing PRs cannot.
+**Why:** The merged first slice proves evaluator accounting on a synthetic fixture. Only real captured inputs and outcomes can falsify “copying scored wallets has positive net expectancy.”
 
-**How (first slice, one draft PR):**
+**How (next slice, one draft PR):**
 
-1. After this docs PR merges, run `/next-chunk R1` (or branch `grok/polymarket-r1-backtest` from `origin/main`).
-2. Add a paper-only replay module plus fixtures under `tests/` (recorded JSON, never live orders, never `mode == live`).
-3. Window A: score traders with current `TraderScorer` on recorded Data API leaderboard + activity (the v1 shape this tree actually consumes). Window B: held-out copy using current skip rules, price-shaped taker fee `rate · p · (1 − p)`, detection latency, and explicit no-fill/partial-fill outcomes.
-4. Report net expectancy, skip reasons, and unknown fills separately. Do not count synthetic full fills as live evidence.
-5. First failing test on main: “replay fixture X yields a report object with net expectancy and skip histogram.” Implement the smallest harness that makes that pass.
-6. **Do not** rewrite TP/SL, scoring weights, or retry matrix in the same PR. If the harness needs to change those, stop — that is Tier 2.
+1. Capture real source activity and decision-time outcomes without training/hold-out overlap; keep the capture paper-only and secret-free.
+2. Feed that captured-decision shape through the existing `polymarket_copier.replay::build_heldout_report`; do not create a second evaluator.
+3. Preserve separate skip, no-fill, partial-fill, and unknown-fill counts. Do not count synthetic full fills as live evidence.
+4. Pair R1 with R4 recorded-book replay before treating the result as execution-adjusted expectancy.
+5. **Do not** rewrite TP/SL, scoring weights, or retry matrix in the same PR. If the evidence path needs to change those, stop — that is Tier 2.
 
 ### 3. R2 — Execution parity report
 
-**Why:** Timing telemetry exists (PR #86) and the clocks are now test-honest (PR #144), but there is still no operator report that joins detection, quote, fee, skip, and fill certainty.
+**Why:** The merged first slice reports decision counts, skip reasons, and wall-age timing, but there is still no operator report that joins detection, quote, fee, skip, and fill certainty.
 
-**How:** Persist detection/submit/fill timestamps, source vs observed price, spread, fee, skip reason, and authoritative order/trade status. Label unknown fills. Build on existing `log_event` fields; do not invent a second log pipeline. Paper-only.
+**How:** Extend `scripts/paper_metrics_report.py` over the existing `log_event` fields; do not invent a second log pipeline. Aggregate the emitted source/quoted/fill prices, fee, size, and submit/fill timing; join closes by position; add decision-time spread/book depth and authoritative order/trade status. Label unknown fills. Paper-only.
 
 ### 4. R4 — Paper fill realism
 
@@ -171,7 +179,7 @@ IDs match `next_steps.md`. Nothing below authorizes live mode. Do not silently f
 
 ### Not on the real-money critical path
 
-`next_steps.md` L1–L3 (seen-id cap, signer thread count, per-wallet poll circuit) are operational polish. Do them after R1 exists, not instead of it.
+`next_steps.md` L1–L3 (seen-id cap, signer thread count, per-wallet poll circuit) are operational polish. Do them after R1's real-evidence gap closes, not instead of it.
 
 ## Planning Sources Rechecked (accessed 2026-09-11)
 
