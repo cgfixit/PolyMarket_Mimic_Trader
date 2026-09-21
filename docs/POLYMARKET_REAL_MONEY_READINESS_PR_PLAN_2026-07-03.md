@@ -4,12 +4,14 @@
 
 This bot should be modernized as a realistic paper/research demo first. Real-money use stays blocked until forward paper results prove net edge after spread, slippage, fees, latency, and jurisdiction checks.
 
-## Status As Of 2026-08-08
+## Status As Of 2026-09-21
+
+**Repo snapshot:** `origin/main` at `120d7893cb6417a93da6f9fbd8f6a746a05f688b`.
 
 - PR 1 is implemented on main: current leaderboard/API shape, tradability gates, and documented WebSocket heartbeat are handled.
 - PR 2 is mostly implemented on main: paper fills/copy gates use the price-shaped fee curve and CLOB fee metadata where available. Remaining work is recorded-book replay with size-aware VWAP, partial fills, and no-fills.
-- PR 3 is partially implemented on main: `signature_type`/`funder` config and live geoblock preflight exist. Remaining work is supported SDK-v2 migration, minimal-fund live auth testing, and venue/legal sign-off.
-- PR 4 is still open and is the real go-live gate: backtesting, income-classified trader metrics, authoritative fill reconciliation, and net expectancy reports.
+- PR 3 is partially implemented on main: legacy `signature_type`/`funder` config and live geoblock preflight exist. Remaining work is migration to the current official `polymarket-client`, exact Deposit Wallet/Relayer and L1/L2 contract tests, minimal-fund live auth testing, and venue/legal sign-off.
+- PR 4 remains the real go-live gate. Initial paper-only slices now exist: a synthetic-fixture held-out evaluator (`75d33e4`) and a decision timing/skip summary (`6db5fef`). They do not supply real captured inputs, book-depth replay, income-classified trader metrics, authoritative fill reconciliation, or profitability evidence.
 
 ## PR 1: API Drift And Tradability Fixes
 
@@ -55,15 +57,15 @@ Do this only after deciding whether live mode remains in scope.
 
 Required changes:
 
-- Migrate from `py-clob-client` to `py-clob-client-v2`, or remove the international live path; a V1 proof is not a production compatibility proof.
-- Add explicit config for signature type and funder/deposit wallet.
-- Derive or load L2 API credentials without logging secrets.
+- Migrate from legacy `py-clob-client` V1 to the current official `polymarket-client`, or remove the international live path; legacy `signature_type`/`funder` config is not production compatibility proof.
+- Model the current Secure Client inputs explicitly: signer, account wallet, and Relayer credentials where required.
+- Create or derive CLOB L2 credentials through the supported L1 flow without logging secrets.
 - Add a startup geoblock check before any live order path.
 - Keep paper mode as the default.
 
 Acceptance:
 
-- Live mode refuses to start without private key, signature type, funder when required, and successful geoblock eligibility.
+- Live mode refuses to start without the exact signer, account-wallet, Relayer/L1/L2 credentials required by the selected account type, plus successful geoblock eligibility.
 - Unit tests cover config validation without real credentials.
 - Adapter contract tests cover V2 order creation, order-status lookup, and redacted error handling without real credentials.
 
@@ -71,9 +73,14 @@ Acceptance:
 
 This is not solved by code cleanup.
 
-Required changes:
+Implemented first slices:
 
-- Persist source trade timestamp, detection timestamp, submit timestamp, fill timestamp, source price, observed price, fill price, spread, fee, size, skip reason, and realized PnL.
+- `polymarket_copier/replay.py` enforces training/hold-out separation, reuses the existing fee/slippage helpers for known outcomes, and keeps unknown fills out of net-expectancy arithmetic. Its bundled input is synthetic and does not exercise a historical order book.
+- `scripts/paper_metrics_report.py` summarizes paper opens/skips, breaker trips, skip reasons, and wall-age timing from existing structured logs. It explicitly does not report execution-adjusted expectancy.
+
+Remaining changes:
+
+- Join the existing open/skip timestamps, prices, fee, size, and reason fields with close PnL; add decision-time spread, book VWAP, and authoritative fill state instead of treating synthetic paper fills as execution evidence.
 - Persist source activity type and separate directional PnL from redemption, reward, rebate, referral, and unknown activity.
 - For a future live path, obtain authoritative order/trade state before changing a position or PnL; absent concrete fill data remains unknown.
 - Add a daily report grouped by source wallet, category, market, and skip reason.

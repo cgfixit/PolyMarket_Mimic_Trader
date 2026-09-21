@@ -7,21 +7,21 @@ The remaining question is narrower: can this bot prove a net edge outside paper 
 ## Real-Money Blockers
 
 - **Venue/legal:** the bot targets the international Polymarket CLOB. US/Georgia real-money use needs a current venue-specific legal review and likely a separate regulated venue path.
-- **Backtesting:** no held-out offline backtest proves selected traders remain profitable after spread, slippage, fees, latency, skipped fills, and no-fills.
-- **Paper/live gap:** paper mode remains useful for plumbing, but it cannot prove live execution quality or fill selection bias.
+- **Backtesting:** the merged held-out evaluator is exercised only by a synthetic captured-decision fixture; no real-data study proves selected traders remain profitable after spread, slippage, fees, latency, skipped fills, and no-fills.
+- **Paper/live gap:** the merged paper decision report summarizes decisions, skip reasons, and timing, but paper mode cannot prove live execution quality or fill selection bias.
 - **Activity attribution:** `REWARD` and current blank-asset redemption rows are now excluded from directional scoring. Resolution ROI/win-rate remains incomplete until every realization has token and payout attribution and worthless expiries are represented.
 - **Fill certainty:** missing concrete live fill fields currently fall back to a full fill at the quote. Future position/PnL accounting needs authoritative order/trade state and an explicit unknown state.
-- **SDK/auth:** deposit-wallet config exists, but the legacy V1 client needs a supported V2 migration and contract proof before any sizing.
+- **SDK/auth:** legacy deposit-wallet config exists, but the V1 client needs migration to the current official `polymarket-client` plus exact Deposit Wallet/Relayer and L1/L2 contract proof before any sizing.
 
 ## Highest-Value Work
 
 | ID | Work | Why it matters |
 |----|------|----------------|
-| R1 | Offline backtest harness | Replays historical leaderboard/activity and market data to measure forward net expectancy. |
-| R2 | Execution parity report | Records detection latency, spread, book VWAP, fee, skip reason, authoritative order/trade status, and labels unknown fills separately from simulated fills. |
+| R1 | Held-out evaluator continuation | The first slice enforces train/hold-out separation and explicit unknown fills; real captured inputs and decision-time outcomes are still missing. |
+| R2 | Execution parity report continuation | Open events carry prices, fees, and timing, but the summary does not aggregate them; spread, book VWAP, and authoritative fill state are still missing. |
 | R3 | Trader metric de-biasing | Accounts for unresolved/worthless outcomes and separates directional PnL from redemption, reward, rebate, referral, and unknown activity. |
 | R4 | Paper fill realism | Replays recorded order-book snapshots for size-aware paper VWAP, partial-fill, and no-fill outcomes. |
-| R5 | Live auth proof | Migrates to the supported V2 SDK and verifies the SDK/signature/funder path with minimal funds and redacted logs. |
+| R5 | Live auth proof | Migrates to `polymarket-client` and verifies its signer, account-wallet, Relayer, and L1/L2 path with minimal funds and redacted logs. |
 | R6 | Venue adapter decision | Decide whether live mode targets the international CLOB, Polymarket US, Kalshi, or remains paper-only. |
 
 ## Operational Checklist Before Any Live Test
@@ -53,3 +53,5 @@ These are not real-money blockers, but still worth keeping on the backlog:
 - Documented WebSocket heartbeat landed in PR #87.
 - `usdcSize` activity notional parsing landed in PR #88.
 - Canonical `paper_taker_fee_rate` docs/config cleanup landed in PR #89.
+- The paper decision telemetry report landed in `6db5fef`; it is observability, not execution-adjusted expectancy.
+- The held-out replay evaluator landed in `75d33e4`; its bundled fixture proves accounting behavior, not profitability.
