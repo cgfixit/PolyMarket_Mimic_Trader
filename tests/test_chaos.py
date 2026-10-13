@@ -27,35 +27,10 @@ from polymarket_copier.core.monitor import TradeMonitor
 from polymarket_copier.core.portfolio import PortfolioManager
 from polymarket_copier.core.risk_manager import RiskConfig, RiskManager
 from polymarket_copier.models.types import Market
+from tests.conftest import FakeSession
 
 
 # ─── Fake HTTP helpers ────────────────────────────────────────────────────────
-
-
-class _FakeResp:
-    def __init__(self, data=None, status=200, reason="OK"):
-        self._data = data if data is not None else []
-        self.status = status
-        self.reason = reason
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def json(self):
-        return self._data
-
-
-class _FakeSession:
-    def __init__(self, data=None, status=200, reason="OK"):
-        self._data = data if data is not None else []
-        self._status = status
-        self._reason = reason
-
-    def get(self, url, params=None):
-        return _FakeResp(self._data, self._status, self._reason)
 
 
 # ─── Shared fixtures ──────────────────────────────────────────────────────────
@@ -132,7 +107,7 @@ class TestAPIErrorResilience:
         """An HTTP 500 from the Data API must log a warning and return without crashing
         the poll loop or raising an unhandled exception."""
         monitor, _copier = wired
-        session = _FakeSession(status=500)
+        session = FakeSession(status=500)
 
         with caplog.at_level(logging.WARNING):
             await monitor._poll_wallet(session, "0xwhale")  # must not raise
@@ -146,7 +121,7 @@ class TestAPIErrorResilience:
         """An HTTP 429 (rate-limit) response is treated the same as any other non-200:
         log a warning and skip the cycle without crashing."""
         monitor, _copier = wired
-        session = _FakeSession(status=429)
+        session = FakeSession(status=429)
 
         with caplog.at_level(logging.WARNING):
             await monitor._poll_wallet(session, "0xwhale")
@@ -157,7 +132,7 @@ class TestAPIErrorResilience:
     async def test_empty_api_response_produces_no_trade_events(self, wired):
         """An empty list from the Data API (no recent activity) must not trigger any copies."""
         monitor, copier = wired
-        session = _FakeSession(data=[])
+        session = FakeSession(data=[])
 
         await monitor._poll_wallet(session, "0xwhale")
 
@@ -170,7 +145,7 @@ class TestAPIErrorResilience:
         malformed = [
             {"id": "bad-1", "type": "trade", "side": "BUY"},  # missing price/size/market
         ]
-        session = _FakeSession(data=malformed)
+        session = FakeSession(data=malformed)
 
         with caplog.at_level(logging.WARNING):
             await monitor._poll_wallet(session, "0xwhale")
@@ -184,7 +159,7 @@ class TestAPIErrorResilience:
         non_trade = [
             {"id": "dep-1", "type": "deposit", "amount": "1000"},
         ]
-        session = _FakeSession(data=non_trade)
+        session = FakeSession(data=non_trade)
 
         await monitor._poll_wallet(session, "0xwhale")
 
@@ -194,7 +169,7 @@ class TestAPIErrorResilience:
         """Two poll cycles returning the same trade ID must open exactly one position
         (deduplication via _seen_trade_ids)."""
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
 
         await monitor._poll_wallet(session, "0xwhale")
         await monitor._poll_wallet(session, "0xwhale")
@@ -226,7 +201,7 @@ class TestWSChaos:
         monitor, copier = wired
         monitor._subscribed_tokens.add("tok-a")
         # Open a position first so the subscription is active.
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
 
         ticks_received = []
@@ -247,7 +222,7 @@ class TestWSChaos:
         """A WS price < 0.0 must also be filtered."""
         monitor, copier = wired
         monitor._subscribed_tokens.add("tok-a")
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
 
         ticks_received = []
@@ -288,7 +263,7 @@ class TestWSChaos:
         Entry=0.50 → TP ≈ 0.70. A tick at 0.99 is well above TP.
         """
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
         assert await copier.portfolio.position_count() == 1
 
@@ -305,7 +280,7 @@ class TestWSChaos:
         Entry=0.50 → SL ≈ 0.50 - 0.50*0.25 = 0.375. A tick at 0.10 is well below SL.
         """
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
         assert await copier.portfolio.position_count() == 1
 
@@ -320,7 +295,7 @@ class TestWSChaos:
         """A WS message containing both a price_change and an unknown event type
         for the same token must process the price_change and ignore the unknown."""
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
 
         mixed = json.dumps(
@@ -394,8 +369,8 @@ class TestConcurrencyInvariants:
             }
         ]
 
-        session_w1 = _FakeSession(activity_w1)
-        session_w2 = _FakeSession(activity_w2)
+        session_w1 = FakeSession(activity_w1)
+        session_w2 = FakeSession(activity_w2)
 
         await asyncio.gather(
             monitor._poll_wallet(session_w1, "0xwhale1"),
@@ -451,8 +426,8 @@ class TestConcurrencyInvariants:
                 "timestamp": 1_700_000_000,
             }
         ]
-        s1 = _FakeSession(same_token_activity_w1)
-        s2 = _FakeSession(same_token_activity_w2)
+        s1 = FakeSession(same_token_activity_w1)
+        s2 = FakeSession(same_token_activity_w2)
 
         await asyncio.gather(
             monitor._poll_wallet(s1, "0xwhale1"),
@@ -470,7 +445,7 @@ class TestConcurrencyInvariants:
         """The same trade event received in two consecutive polls (same wallet, same trade ID)
         must be deduplicated by _seen_trade_ids so only ONE position is opened."""
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
 
         await monitor._poll_wallet(session, "0xwhale")
         await monitor._poll_wallet(session, "0xwhale")

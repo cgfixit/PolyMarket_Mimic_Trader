@@ -33,34 +33,10 @@ from polymarket_copier.core.monitor import TradeMonitor, _WS_RECONNECT_DELAY
 from polymarket_copier.core.portfolio import PortfolioManager
 from polymarket_copier.core.risk_manager import RiskConfig, RiskManager
 from polymarket_copier.models.types import Market
+from tests.conftest import FakeSession
 
 
 # ─── Fake aiohttp session for the monitor's REST poll path ────────────────────
-
-
-class _FakeResp:
-    def __init__(self, data, status=200):
-        self._data = data
-        self.status = status
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def json(self):
-        return self._data
-
-
-class _FakeSession:
-    """Minimal stand-in for aiohttp.ClientSession.get()."""
-
-    def __init__(self, data):
-        self._data = data
-
-    def get(self, url, params=None):
-        return _FakeResp(self._data)
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -139,7 +115,7 @@ class TestMonitorToCopier:
         """Regression guard for the un-awaited-callback bug: a BUY detected by the
         monitor's poll path must actually flow through to an opened position."""
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
 
         # Drive the real monitor dispatch (awaits on_trade internally).
         await monitor._poll_wallet(session, "0xwhale")
@@ -152,7 +128,7 @@ class TestMonitorToCopier:
     async def test_duplicate_poll_does_not_double_open(self, wired):
         """A second poll of the same activity must not re-open (dedup by trade id)."""
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
 
         await monitor._poll_wallet(session, "0xwhale")
         await monitor._poll_wallet(session, "0xwhale")
@@ -164,7 +140,7 @@ class TestMonitorToCopier:
         """After opening via the monitor, a WS price tick at TP must exit the
         position through the real _handle_ws_message -> on_price path."""
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
         assert await copier.portfolio.position_count() == 1
 
@@ -179,7 +155,7 @@ class TestMonitorToCopier:
     @pytest.mark.asyncio
     async def test_ws_tick_below_tp_holds(self, wired):
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
 
         raw = json.dumps([{"event_type": "price_change", "asset_id": "tok-a", "price": "0.55"}])
@@ -192,7 +168,7 @@ class TestMonitorToCopier:
         """Regression guard for the dead trailing-stop bug: a new high seen on the
         WS feed must be persisted to the DB so the trailing stop can tighten."""
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
 
         # 0.68 is a new high but below TP (0.70) — should persist peak, not exit.
@@ -427,7 +403,7 @@ class TestSimultaneousMultiMarketExits:
         This test drives both guards under real concurrency.
         """
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
         assert await copier.portfolio.position_count() == 1
 
@@ -446,7 +422,7 @@ class TestSimultaneousMultiMarketExits:
     async def test_concurrent_exits_leave_no_orphaned_exposure(self, wired):
         """After a concurrent double-tick exit, exposure must be 0 (no phantom allocation)."""
         monitor, copier = wired
-        session = _FakeSession(BUY_ACTIVITY)
+        session = FakeSession(BUY_ACTIVITY)
         await monitor._poll_wallet(session, "0xwhale")
 
         tp_tick = json.dumps([{"event_type": "price_change", "asset_id": "tok-a", "price": "0.80"}])

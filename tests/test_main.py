@@ -18,37 +18,7 @@ from polymarket_copier.main import (
     enforce_forward_paper_gate,
     run_bot,
 )
-
-
-class _FakeResp:
-    def __init__(self, data=None, exc: Exception | None = None):
-        self._data = data
-        self._exc = exc
-
-    async def __aenter__(self):
-        if self._exc:
-            raise self._exc
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    def raise_for_status(self):
-        return None
-
-    async def json(self):
-        return self._data
-
-
-class _FakeSession:
-    def __init__(self, data=None, exc: Exception | None = None):
-        self.data = data
-        self.exc = exc
-        self.urls: list[str] = []
-
-    def get(self, url):
-        self.urls.append(url)
-        return _FakeResp(self.data, self.exc)
+from tests.conftest import FakeSession
 
 
 @pytest.fixture
@@ -58,7 +28,7 @@ def logger():
 
 @pytest.mark.asyncio
 async def test_geoblock_preflight_skips_paper_mode(logger):
-    session = _FakeSession({"blocked": True, "country": "US", "region": "GA"})
+    session = FakeSession({"blocked": True, "country": "US", "region": "GA"})
 
     await _enforce_live_geoblock_preflight(AppConfig(mode="paper"), session, logger)
 
@@ -67,7 +37,7 @@ async def test_geoblock_preflight_skips_paper_mode(logger):
 
 @pytest.mark.asyncio
 async def test_geoblock_preflight_passes_allowed_live_region(logger):
-    session = _FakeSession({"blocked": False, "country": "IE", "region": ""})
+    session = FakeSession({"blocked": False, "country": "IE", "region": ""})
 
     await _enforce_live_geoblock_preflight(AppConfig(mode="live"), session, logger)
 
@@ -76,7 +46,7 @@ async def test_geoblock_preflight_passes_allowed_live_region(logger):
 
 @pytest.mark.asyncio
 async def test_geoblock_preflight_blocks_live_region(logger):
-    session = _FakeSession({"blocked": True, "country": "US", "region": "GA"})
+    session = FakeSession({"blocked": True, "country": "US", "region": "GA"})
 
     with pytest.raises(ConfigError, match="US-GA"):
         await _enforce_live_geoblock_preflight(AppConfig(mode="live"), session, logger)
@@ -84,7 +54,7 @@ async def test_geoblock_preflight_blocks_live_region(logger):
 
 @pytest.mark.asyncio
 async def test_geoblock_preflight_fails_closed_on_invalid_response(logger):
-    session = _FakeSession({"country": "US"})
+    session = FakeSession({"country": "US"})
 
     with pytest.raises(ConfigError, match="invalid response"):
         await _enforce_live_geoblock_preflight(AppConfig(mode="live"), session, logger)
@@ -92,7 +62,7 @@ async def test_geoblock_preflight_fails_closed_on_invalid_response(logger):
 
 @pytest.mark.asyncio
 async def test_geoblock_preflight_fails_closed_on_request_error(logger):
-    session = _FakeSession(exc=TimeoutError("slow"))
+    session = FakeSession(enter_exc=TimeoutError("slow"))
 
     with pytest.raises(ConfigError, match="failed"):
         await _enforce_live_geoblock_preflight(AppConfig(mode="live"), session, logger)
