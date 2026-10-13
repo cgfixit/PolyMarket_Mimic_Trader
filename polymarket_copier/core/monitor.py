@@ -50,6 +50,7 @@ from polymarket_copier.utils.activity import (
     activity_side,
     activity_token_id,
     is_trade_activity,
+    parse_activity_timestamp,
 )
 
 # websockets is an optional hard-dep; linter-safe import with graceful fallback
@@ -638,20 +639,10 @@ def _parse_trade_event(wallet: str, raw: dict) -> Optional[TradeEvent]:
         size = activity_notional_usdc(raw)
         outcome = raw.get("outcomeLabel", "YES" if raw.get("outcomeIndex", 0) == 0 else "NO")
 
-        ts_raw = raw.get("timestamp", raw.get("createdAt", ""))
-        if isinstance(ts_raw, str):
-            from datetime import datetime, timezone
-
-            parsed = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
-            # An offset-less ISO string is venue UTC, not host-local time: a naive
-            # datetime makes .timestamp() interpret it in the server's timezone,
-            # skewing wall_age by the UTC offset and falsely tripping the stale gate.
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            ts = parsed.timestamp()
-        elif isinstance(ts_raw, (int, float)):
-            ts = ts_raw / 1_000.0 if ts_raw > 1e12 else float(ts_raw)
-        else:
+        # A malformed string raises ValueError and drops the event below; an
+        # unsupported type falls back to now (the staleness gate then sees age 0).
+        ts = parse_activity_timestamp(raw.get("timestamp", raw.get("createdAt", "")))
+        if ts is None:
             ts = time.time()
 
         if (

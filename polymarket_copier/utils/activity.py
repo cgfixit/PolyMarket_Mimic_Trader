@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 
 
 def _float_or_none(value) -> float | None:
@@ -62,3 +63,23 @@ def activity_notional_usdc(raw: dict) -> float:
     if size is None or price is None or price <= 0:
         return 0.0
     return size * price
+
+
+def parse_activity_timestamp(raw) -> float | None:
+    """Return a Data API timestamp as Unix seconds, or None for an unsupported type.
+
+    ISO 8601 strings accept a ``Z`` suffix, and an offset-less string is venue
+    UTC, not host-local time: a naive datetime makes ``.timestamp()`` read it in
+    the server's timezone, skewing staleness and recency by the UTC offset.
+    Numbers above 1e12 are milliseconds. A malformed string raises ValueError and
+    a non-finite number is returned as-is, so each caller keeps its own
+    fail-closed policy (the monitor drops the event, the tracker scores 0.0).
+    """
+    if isinstance(raw, str):
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    if isinstance(raw, (int, float)):
+        return raw / 1_000.0 if raw > 1e12 else float(raw)
+    return None

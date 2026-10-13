@@ -55,6 +55,7 @@ from polymarket_copier.utils.activity import (
     activity_token_id,
     activity_type,
     is_trade_activity,
+    parse_activity_timestamp,
 )
 
 logger = logging.getLogger(__name__)
@@ -760,22 +761,8 @@ def _parse_timestamp(raw) -> float:
     inflating their recency score. 0.0 lets _recency_weight() return 0.0 for
     those traders instead, which is the correct signal: unknown = stale.
     """
-    if isinstance(raw, str):
-        try:
-            from datetime import datetime, timezone
-
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            # Offset-less ISO strings are venue UTC, not host-local time — a naive
-            # datetime makes .timestamp() interpret them in the server timezone
-            # (see monitor._parse_trade_event, same fix).
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.timestamp()
-        except ValueError:
-            return 0.0
-    elif isinstance(raw, (int, float)):
-        if not math.isfinite(raw):
-            return 0.0
-        # If in milliseconds (> year 3000 as seconds ≈ 3.2e10)
-        return float(raw) / 1_000.0 if raw > 1e12 else float(raw)
-    return 0.0
+    try:
+        ts = parse_activity_timestamp(raw)
+    except ValueError:
+        return 0.0
+    return ts if ts is not None and math.isfinite(ts) else 0.0
