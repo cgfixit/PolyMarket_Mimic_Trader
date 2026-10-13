@@ -314,12 +314,12 @@ class ClobClient:
             from py_clob_client.order_builder.constants import BUY as CLOB_BUY, SELL as CLOB_SELL
 
             side = CLOB_BUY if order.side == "BUY" else CLOB_SELL
-            kwargs: dict[str, Any] = dict(
-                token_id=order.token_id,
-                price=exec_price,
-                size=size_shares,
-                side=side,
-            )
+            kwargs: dict[str, Any] = {
+                "token_id": order.token_id,
+                "price": exec_price,
+                "size": size_shares,
+                "side": side,
+            }
             # Wire the order type through; graceful fallback if clob_types unavailable.
             try:
                 from py_clob_client.clob_types import OrderType

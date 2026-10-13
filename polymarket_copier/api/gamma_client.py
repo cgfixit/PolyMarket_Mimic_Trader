@@ -145,7 +145,7 @@ def _parse_resolve_time(raw: dict) -> Optional[datetime]:
         try:
             if isinstance(val, str):
                 return datetime.fromisoformat(val.replace("Z", "+00:00"))
-            elif isinstance(val, (int, float)):
+            if isinstance(val, (int, float)):
                 ts = val / 1000.0 if val > 1e12 else float(val)
                 return datetime.fromtimestamp(ts, tz=timezone.utc)
         except (ValueError, OSError):

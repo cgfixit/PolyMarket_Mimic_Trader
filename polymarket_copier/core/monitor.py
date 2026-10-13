@@ -55,7 +55,6 @@ from polymarket_copier.utils.activity import (
 # websockets is an optional hard-dep; linter-safe import with graceful fallback
 try:
     import websockets
-    import websockets.exceptions  # noqa: F401
 
     _WS_AVAILABLE = True
 except ImportError:
@@ -273,10 +272,8 @@ class TradeMonitor:
         for task in [self._ws_task, self._poll_task]:
             if task and not task.done():
                 task.cancel()
-                try:
+                with suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    pass
 
     def subscribe_token(self, token_id: str) -> None:
         """Register a token ID for real-time price feed via WebSocket."""
@@ -549,18 +546,17 @@ class TradeMonitor:
             "sortDirection": "DESC",
         }
 
-        async with self._rate_limiter:
-            async with session.get(url, params=params) as resp:
-                if resp.status != 200:
-                    logger.warning(
-                        "Data API returned %d %s for wallet %s",
-                        resp.status,
-                        resp.reason,
-                        wallet[:10],
-                    )
-                    return
+        async with self._rate_limiter, session.get(url, params=params) as resp:
+            if resp.status != 200:
+                logger.warning(
+                    "Data API returned %d %s for wallet %s",
+                    resp.status,
+                    resp.reason,
+                    wallet[:10],
+                )
+                return
 
-                activity: List[dict] = await resp.json()
+            activity: List[dict] = await resp.json()
 
         # COLD-START GUARD: the very first poll for a wallet only seeds the
         # baseline of already-seen trades. Acting on it would copy a backlog of
