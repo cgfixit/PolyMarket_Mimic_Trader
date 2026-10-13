@@ -79,7 +79,7 @@ def build_heldout_report(fixture: Mapping[str, Any]) -> HeldoutReplayReport:
 
     selected_wallets = [trader.stats.address for trader in scorer.score_many(stats)]
     selected = set(selected_wallets)
-    decision_counts = {outcome: 0 for outcome in _OUTCOMES}
+    decision_counts = dict.fromkeys(_OUTCOMES, 0)
     skip_reasons: dict[str, int] = {}
     net_pnl_usdc = 0.0
     seen_event_ids: set[str] = set()

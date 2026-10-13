@@ -679,7 +679,7 @@ def _compute_trader_stats(
             # redeem at $1.00. If the record carries an explicit per-share
             # price, prefer it; otherwise default winning redemptions to 1.0.
             payout_price = price if price > 0 else 1.0
-            while key in open_buys and open_buys[key]:
+            while open_buys.get(key):
                 buy = open_buys[key].pop(0)  # FIFO: oldest open buy first
                 # Use buy-side shares: position size was fixed at entry.
                 buy_shares = buy["size"] / max(buy["price"], _EPSILON)

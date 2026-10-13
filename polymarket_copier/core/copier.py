@@ -30,6 +30,9 @@ from polymarket_copier.utils.logger import log_event
 logger = logging.getLogger("polymarket_copier")
 
 _MAX_REASONABLE_TAKER_FEE_RATE = 0.25
+# Minimum order size ($0.01) — keeps Order model's gt=0 validation happy and
+# is a sensible practical floor for real order books.
+_EPSILON_USDC = 0.01
 
 
 class CopyTrader:
@@ -1083,8 +1086,6 @@ class CopyTrader:
     ) -> list[str]:
         """Drop tracked traders whose Wilson upper bound on copy win-rate is below
         config min_win_rate. Returns list of demoted wallet addresses."""
-        import math
-
         demoted = []
         min_win_rate = self.config.trader_selection.min_win_rate
         for addr in list(self._tracker_win_rates.keys()):
@@ -1126,8 +1127,3 @@ class CopyTrader:
         if demoted:
             metrics.TRADERS_DEMOTED.inc(len(demoted))
         return demoted
-
-
-# Minimum order size ($0.01) — keeps Order model's gt=0 validation happy and
-# is a sensible practical floor for real order books.
-_EPSILON_USDC = 0.01

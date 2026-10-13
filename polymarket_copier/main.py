@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import signal
 import sys
 import time
@@ -375,11 +376,9 @@ def _install_shutdown_handlers(loop: asyncio.AbstractEventLoop, handle_signal) -
         handle_signal()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        # SIGTERM is not always available / settable on Windows.
+        with contextlib.suppress(ValueError, OSError):
             signal.signal(sig, _sync_handler)
-        except (ValueError, OSError):
-            # SIGTERM is not always available / settable on Windows.
-            pass
 
 
 def main() -> None:
