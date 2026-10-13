@@ -1,4 +1,4 @@
-# Windows CPython 3.10-3.13 resolution of requirements.txt, checked 2026-08-14.
+# Windows CPython 3.10-3.13 resolution of requirements.txt, checked 2026-10-13.
 # Keep direct requirement ranges in requirements.txt and pyproject.toml. This
 # file constrains the complete runtime and test graph, including compiled
 # Windows wheels, so a fresh install cannot silently select a different graph.
@@ -37,7 +37,7 @@ hyperframe==6.1.0
 hypothesis==6.165.9
 idna==3.18
 iniconfig==2.3.0
-multidict==6.7.1
+multidict==6.9.1
 packaging==26.3
 parsimonious==0.10.0
 pluggy==1.6.0
@@ -61,6 +61,6 @@ sortedcontainers==2.4.0
 toolz==1.1.0
 typing-extensions==4.16.0
 typing-inspection==0.4.4
-urllib3==2.7.0
+urllib3==2.8.0
 websockets==12.0
 yarl==1.24.5
