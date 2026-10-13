@@ -11,36 +11,7 @@ import pytest
 
 from polymarket_copier.api.gamma_client import GammaClient, _parse_fee_rate, _parse_market, _parse_resolve_time
 from polymarket_copier.models.types import Market
-
-
-class _FakeResp:
-    def __init__(self, data):
-        self._data = data
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    def raise_for_status(self):
-        return None
-
-    async def json(self):
-        return self._data
-
-
-class _FakeSession:
-    """Minimal aiohttp.ClientSession stand-in for get_market_price's session.get."""
-
-    def __init__(self, data, exc=None):
-        self._data = data
-        self._exc = exc
-
-    def get(self, url, params=None):
-        if self._exc:
-            raise self._exc
-        return _FakeResp(self._data)
+from tests.conftest import FakeSession
 
 
 @pytest.fixture
@@ -77,21 +48,22 @@ class TestGammaClient:
     @pytest.mark.asyncio
     async def test_get_market_price_midpoint(self, gamma_client):
         # get_market_price hits the CLOB /midpoint endpoint via session.get.
-        session = _FakeSession({"mid": "0.72"})
+        session = FakeSession({"mid": "0.72"})
         with patch.object(gamma_client, "_get_session", new_callable=AsyncMock, return_value=session):
             price = await gamma_client.get_market_price("token-1")
             assert price == pytest.approx(0.72)
 
     @pytest.mark.asyncio
     async def test_get_market_price_error(self, gamma_client):
-        session = _FakeSession(None, exc=Exception("timeout"))
+        # A valid payload, so only the raised exception can make this return None.
+        session = FakeSession({"mid": "0.72"}, get_exc=Exception("timeout"))
         with patch.object(gamma_client, "_get_session", new_callable=AsyncMock, return_value=session):
             price = await gamma_client.get_market_price("token-1")
             assert price is None
 
     @pytest.mark.asyncio
     async def test_get_market_fee_rate_from_clob_info(self, gamma_client):
-        session = _FakeSession({"fd": {"r": 0.05, "e": 2, "to": True}})
+        session = FakeSession({"fd": {"r": 0.05, "e": 2, "to": True}})
         with patch.object(gamma_client, "_get_session", new_callable=AsyncMock, return_value=session):
             fee_rate = await gamma_client.get_market_fee_rate("condition-1")
             assert fee_rate == pytest.approx(0.05)

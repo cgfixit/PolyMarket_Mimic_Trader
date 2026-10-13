@@ -15,6 +15,7 @@ import pytest
 
 from polymarket_copier.api.data_client import DataClient
 from polymarket_copier.api.gamma_client import GammaClient
+from tests.conftest import FakeSession
 
 
 class _FakeConnector:
@@ -90,38 +91,13 @@ async def test_get_session_reuses_open_session():
     assert _FakeClientSession.instances == 1
 
 
-class _FakeResp:
-    def __init__(self, data):
-        self._data = data
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    def raise_for_status(self):
-        return None
-
-    async def json(self):
-        return self._data
-
-
-class _FakeSession:
-    def __init__(self, data):
-        self._data = data
-
-    def get(self, url, params=None):
-        return _FakeResp(self._data)
-
-
 @pytest.mark.asyncio
 async def test_get_market_price_accepts_zero_midpoint():
     """A genuine 0.0 midpoint is valid in [0, 1] and must not be dropped."""
     client = GammaClient()
     from unittest.mock import AsyncMock
 
-    session = _FakeSession({"mid": 0.0})
+    session = FakeSession({"mid": 0.0})
     with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):
         price = await client.get_market_price("token-1")
     assert price == 0.0
@@ -132,7 +108,7 @@ async def test_get_market_price_falls_through_to_midpoint_key():
     client = GammaClient()
     from unittest.mock import AsyncMock
 
-    session = _FakeSession({"midpoint": "0.33"})
+    session = FakeSession({"midpoint": "0.33"})
     with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):
         price = await client.get_market_price("token-1")
     assert price == pytest.approx(0.33)
