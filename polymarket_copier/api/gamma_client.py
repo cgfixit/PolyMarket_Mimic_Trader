@@ -11,6 +11,7 @@ from typing import Any, Optional
 import aiohttp
 
 from polymarket_copier.models.types import Market
+from polymarket_copier.utils.activity import parse_activity_timestamp
 
 logger = logging.getLogger("polymarket_copier")
 
@@ -137,16 +138,19 @@ class GammaClient:
 
 
 def _parse_resolve_time(raw: dict) -> Optional[datetime]:
-    """Extract market resolution time from various possible field names."""
+    """Extract market resolution time from various possible field names, as an aware UTC datetime.
+
+    An offset-less string is venue UTC. Returning it naive made the copier's
+    ``resolve_time.timestamp()`` read it in the host's timezone, shifting the
+    resolution blackout (entry skip and MARKET_RESOLVING exit) by the UTC offset.
+    """
     for field_name in ("endDate", "resolutionTime", "end_date", "resolution_time"):
         val = raw.get(field_name)
         if val is None:
             continue
         try:
-            if isinstance(val, str):
-                return datetime.fromisoformat(val.replace("Z", "+00:00"))
-            if isinstance(val, (int, float)):
-                ts = val / 1000.0 if val > 1e12 else float(val)
+            ts = parse_activity_timestamp(val)
+            if ts is not None:
                 return datetime.fromtimestamp(ts, tz=timezone.utc)
         except (ValueError, OSError):
             continue
