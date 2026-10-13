@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -173,3 +175,51 @@ class TestParseFeeRate:
     def test_invalid_rate_returns_none(self):
         assert _parse_fee_rate({"fd": {"r": "bad"}}) is None
         assert _parse_fee_rate({"fd": {"r": 1.0}}) is None
+
+
+class TestResolveTimeIsUtc:
+    """Regression: an offset-less Gamma ``endDate`` is venue UTC, not host-local time.
+
+    ``_parse_resolve_time`` used to return a naive datetime for it, and the copier's
+    ``resolve_time.timestamp()`` then read it in the host's timezone. On a US Eastern
+    host that pushed the resolution blackout four hours late, so the entry skip and
+    the MARKET_RESOLVING exit both fired late. Every resolve time must be aware UTC.
+    """
+
+    @pytest.fixture
+    def eastern_host(self, monkeypatch):
+        if not hasattr(time, "tzset"):
+            pytest.skip("time.tzset() is unavailable on this platform")
+        monkeypatch.setenv("TZ", "America/New_York")
+        time.tzset()
+        yield
+        monkeypatch.undo()
+        time.tzset()
+
+    def test_naive_end_date_is_utc_not_host_local(self, eastern_host):
+        expected = datetime(2026, 7, 21, 1, 44, 14, tzinfo=timezone.utc).timestamp()
+        result = _parse_resolve_time({"endDate": "2026-07-21T01:44:14"})
+        assert result is not None
+        assert result.tzinfo is not None
+        assert result.timestamp() == pytest.approx(expected)
+
+    def test_date_only_end_date_is_utc_midnight(self, eastern_host):
+        expected = datetime(2026, 7, 21, tzinfo=timezone.utc).timestamp()
+        result = _parse_resolve_time({"endDate": "2026-07-21"})
+        assert result is not None
+        assert result.timestamp() == pytest.approx(expected)
+
+    def test_hours_to_resolve_matches_the_venue_clock(self, eastern_host):
+        """The copier's blackout arithmetic sees the true distance to resolution."""
+        now = time.time()
+        venue_naive = datetime.fromtimestamp(now + 21 * 3600, tz=timezone.utc).replace(tzinfo=None)
+        market = _parse_market({"conditionId": "c", "endDate": venue_naive.isoformat(timespec="seconds")})
+        hours_to_resolve = (market.resolve_time.timestamp() - now) / 3600
+        assert hours_to_resolve == pytest.approx(21.0, abs=0.01)
+        assert 0 < hours_to_resolve < 24  # inside the default 24h blackout
+
+    def test_explicit_offset_keeps_its_instant(self):
+        expected = datetime(2026, 7, 20, 23, 44, 14, tzinfo=timezone.utc).timestamp()
+        result = _parse_resolve_time({"endDate": "2026-07-21T01:44:14+02:00"})
+        assert result is not None
+        assert result.timestamp() == pytest.approx(expected)
