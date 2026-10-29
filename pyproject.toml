@@ -5,7 +5,10 @@ description = "Polymarket copy-trading bot with conservative, range-relative ris
 requires-python = ">=3.10"
 dependencies = [
     "py-clob-client>=0.34.0,<1.0",
-    "aiohttp>=3.9.0,<4.0",
+    "aiohttp>=3.14.4,<4.0",
+    "certifi>=2026.10.19",
+    "urllib3>=2.8.0",
+    "multidict>=6.9.1",
     "websockets>=12.0,<13.0",
     "pyyaml>=6.0,<7.0",
     "python-dotenv>=1.0.0,<2.0",
